@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -33,17 +33,22 @@ namespace vtil
 	// Calculates the address of an inline object within the region [begin-end]
 	// with the given size and alignment properties.
 	//
-	static size_t calc_inline_address( const void* begin, const void* end, size_t size, size_t align )
+	template<bool get>
+	static uint64_t calc_inline_address( const void* begin, const void* end, size_t size, size_t align )
 	{
 		// Calculate inline boundaries. 
 		//
-		size_t ptr = ( size_t ) begin;
-		size_t ptr_lim = ( size_t ) end;
+		uint64_t ptr = ( uint64_t ) begin;
+		uint64_t ptr_lim = ( uint64_t ) end;
 
 		// Align as required.
 		//
-		size_t align_mask = align - 1;
-		size_t ptr_a = ( ptr + align_mask ) & ~align_mask;
+		uint64_t align_mask = align - 1;
+		uint64_t ptr_a = ( ptr + align_mask ) & ~align_mask;
+
+		// Skip overflow check if getter.
+		//
+		if constexpr ( get ) return ptr_a;
 
 		// If overflows, return null, else return the aligned address.
 		//
@@ -117,7 +122,7 @@ namespace vtil
 			{
 				// Redirect to the copy constructor.
 				//
-				new ( this ) variant( ( variant& ) src );
+				new ( this ) variant( ( const variant& ) src );
 
 				// Free the object stored in source.
 				//
@@ -132,7 +137,7 @@ namespace vtil
 			// Steal the stored external pointer.
 			//
 			is_inline = false;
-			ext = std::move( src.ext );
+			ext = src.ext;
 		}
 
 		// Inherit the inline/copy/destruction traits from source.
@@ -154,13 +159,13 @@ namespace vtil
 	// Gets the address of the object with the given properties.
 	// - Will throw assert failure if the variant is empty.
 	//
-	size_t variant::get_address( size_t size, size_t align ) const
+	uint64_t variant::get_address( size_t size, size_t align ) const
 	{
 		fassert( has_value() );
 
 		// If object is inline, calculate the inline address, otherwise return the external pointer.
 		//
-		return is_inline ? calc_inline_address( inl, std::end( inl ), size, align ) : ( size_t ) ext;
+		return is_inline ? calc_inline_address<true>( inl, std::end( inl ), size, align ) : ( uint64_t ) ext;
 	}
 
 	// Allocates the space for an object of the given properties and returns the pointer.
@@ -169,7 +174,7 @@ namespace vtil
 	{
 		// Calculate the inline address, if successful reference the inline object.
 		//
-		if ( size_t inline_adr = calc_inline_address( inl, std::end( inl ), size, align ) )
+		if ( uint64_t inline_adr = calc_inline_address<false>( inl, std::end( inl ), size, align ) )
 		{
 			is_inline = true;
 			return ( void* ) inline_adr;
@@ -179,7 +184,7 @@ namespace vtil
 		else
 		{
 			is_inline = false;
-#ifdef _MSC_VER
+#ifdef _WIN64
 			return ext = _aligned_malloc( size, align );
 #else
 			return ext = aligned_alloc( align, size );
@@ -202,7 +207,7 @@ namespace vtil
 			//
 			if ( !is_inline )
 			{
-#ifdef _MSC_VER
+#ifdef _WIN64
 				_aligned_free( ext );
 #else
 				free( ext );

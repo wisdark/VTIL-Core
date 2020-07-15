@@ -1,14 +1,13 @@
 #pragma once
 #include "../../util/concept.hpp"
 #include "../../util/copy_on_write.hpp"
-#include "../../util/critical_section.hpp"
+#include "../../util/thread_identifier.hpp"
 #include "../../util/lt_typeid.hpp"
 #include "../../util/fnv64.hpp"
 #include "../../util/fnv128.hpp"
 #include "../../util/hashable.hpp"
 #include "../../util/mul128.hpp"
 #include "../../util/optional_reference.hpp"
-#include "../../util/priority_list.hpp"
 #include "../../util/reducable.hpp"
 #include "../../util/stack_container.hpp"
 #include "../../util/variant.hpp"
@@ -17,3 +16,25 @@
 #include "../../util/sinkhole.hpp"
 #include "../../util/constexpr_random.hpp"
 #include "../../util/range.hpp"
+#include "../../util/reverse_iterator.hpp"
+#include "../../util/conditional_lock.hpp"
+#include "../../util/numeric_iterator.hpp"
+#include "../../util/multivariate.hpp"
+#include "../../util/static_warning.hpp"
+#include "../../util/random.hpp"
+#include "../../util/profiler.hpp"
+#include "../../util/bitmap.hpp"
+#include "../../util/type_helpers.hpp"
+#include "../../util/enumerator.hpp"
+#include "../../util/deferred_value.hpp"
+#include "../../util/trilean.hpp"
+
+// VTIL namespace should be able to use literals by default without having to include it.
+//
+#include <chrono>
+#include <string>
+namespace vtil
+{
+	using namespace std::literals::string_literals;
+	using namespace std::literals::chrono_literals;
+};

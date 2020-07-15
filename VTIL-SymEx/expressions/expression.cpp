@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -73,7 +73,7 @@ namespace vtil::symbolic
 	// Resizes the expression, if not constant, expression::resize will try to propagate 
 	// the operation as deep as possible.
 	//
-	expression& expression::resize( bitcnt_t new_size, bool signed_cast )
+	expression& expression::resize( bitcnt_t new_size, bool signed_cast, bool no_explicit )
 	{
 		// If requested size is equal, skip.
 		//
@@ -95,26 +95,26 @@ namespace vtil::symbolic
 			{
 				signed_cast = false;
 			}
-			/*// If high bit is known one:
-			//
-			else if ( value.at( value.size() - 1 ) == math::bit_state::one )
+		}
+
+		// If expression is lazy, delay it.
+		//
+		if ( is_lazy )
+		{
+			if ( is_constant() )
 			{
-				// Extend the sign bit.
-				//
-				uint64_t sign_mask = math::fill( 64, value.size() );
-
-				// Perform unsigned cast.
-				//
-				resize( new_size, false );
-
-				// Apply the extended sign bit.
-				//
-				*this = *this | sign_mask;
-
-				// Return the resulting expression.
-				//
-				return *this;
-			}*/
+				value = value.resize( new_size, signed_cast );
+				update( false );
+			}
+			else
+			{
+				if ( no_explicit ) return *this;
+				if ( signed_cast )
+					*this = __cast( *this, new_size );
+				else
+					*this = __ucast( *this, new_size );
+			}
+			return *this;
 		}
 
 		switch ( op )
@@ -125,9 +125,11 @@ namespace vtil::symbolic
 				if ( is_constant() )
 				{
 					value = value.resize( new_size, signed_cast );
+					update( false );
 				}
 				else
 				{
+					if ( no_explicit ) return *this;
 					if ( signed_cast )
 						*this = __cast( *this, new_size );
 					else
@@ -146,6 +148,7 @@ namespace vtil::symbolic
 				}
 				else
 				{
+					if ( no_explicit ) return *this;
 					if ( signed_cast )
 						*this = __cast( *this, new_size );
 					else
@@ -161,6 +164,7 @@ namespace vtil::symbolic
 				}
 				else
 				{
+					if ( no_explicit ) return *this;
 					if ( signed_cast )
 						*this = __cast( *this, new_size );
 					else
@@ -178,7 +182,8 @@ namespace vtil::symbolic
 				{
 					// Resize shifted expression and break.
 					//
-					( +lhs )->resize( new_size, false );
+					lhs.resize( new_size, false );
+					update( false );
 					break;
 				}
 			case math::operator_id::shift_right:
@@ -186,27 +191,46 @@ namespace vtil::symbolic
 				//
 				if( !signed_cast && new_size > value.size() )
 				{
-					// Calculate the original result's mask.
-					//
-					expression mask = { value.value_mask(), new_size };
-
-					// Resize shifted expression and update it.
-					//
-					( +lhs )->resize( new_size, false );
-					update( true );
-
-					// Mask the result.
-					//
-					*this = expression::make( *this, math::operator_id::bitwise_and, mask );
+					lhs = std::move( lhs ).resize( new_size, false ); 
+					update( false ); 
 				}
 				// Otherwise nothing else to do.
 				//
 				else
 				{
+					if ( no_explicit ) return *this;
 					if ( signed_cast )
 						*this = __cast( *this, new_size );
 					else
 						*this = __ucast( *this, new_size );
+				}
+				break;
+
+			// If not:
+			//
+			case math::operator_id::bitwise_not:
+				if ( !signed_cast )
+				{
+					// If shrinking, just resize.
+					//
+					if ( new_size < value.size() )
+					{
+						( +rhs )->resize( new_size, false );
+						update( false );
+					}
+					// If extending:
+					//
+					else
+					{
+						uint64_t rhs_mask = value.known_one() | value.unknown_mask();
+						auto rhs_v = std::move( rhs );
+						*this = ( ~( rhs_v.resize( new_size, false ) ) ) & expression{ rhs_mask, new_size };
+					}
+				}
+				else
+				{
+					if ( no_explicit ) return *this;
+					*this = __cast( *this, new_size );
 				}
 				break;
 
@@ -215,7 +239,6 @@ namespace vtil::symbolic
 			case math::operator_id::bitwise_and:
 			case math::operator_id::bitwise_or:
 			case math::operator_id::bitwise_xor:
-			case math::operator_id::bitwise_not:
 			case math::operator_id::umultiply:
 			case math::operator_id::udivide:
 			case math::operator_id::uremainder:
@@ -223,11 +246,23 @@ namespace vtil::symbolic
 			case math::operator_id::umin_value:
 				if ( !signed_cast )
 				{
-					if ( lhs && lhs->size() != new_size ) ( +lhs )->resize( new_size, false );
-					if ( rhs->size() != new_size ) ( +rhs )->resize( new_size, false );
+					// If shrinking and is division-related:
+					//
+					if ( new_size < value.size() && ( op == math::operator_id::udivide || op == math::operator_id::uremainder ))
+					{
+						if ( no_explicit ) return *this;
+						*this = __ucast( *this, new_size );
+					}
+					else
+					{
+						if ( lhs ) lhs.resize( new_size, false );
+						rhs.resize( new_size, false );
+						update( false );
+					}
 				}
 				else
 				{
+					if ( no_explicit ) return *this;
 					*this = __cast( *this, new_size );
 				}
 				break;
@@ -244,12 +279,25 @@ namespace vtil::symbolic
 			case math::operator_id::min_value:
 				if ( signed_cast )
 				{
-					if ( lhs && lhs->size() != new_size ) ( +lhs )->resize( new_size, true );
-					if ( rhs->size() != new_size ) ( +rhs )->resize( new_size, true );
+					if ( lhs ) lhs.resize( new_size, true );
+					rhs.resize( new_size, true );
+					update( false );
 				}
 				else
 				{
-					*this = __ucast( *this, new_size );
+					// If shrinking and is not division-related:
+					//
+					if ( new_size < value.size() && op != math::operator_id::divide && op != math::operator_id::remainder )
+					{
+						if ( lhs ) lhs.resize( new_size, false );
+						rhs.resize( new_size, false );
+						update( false );
+					}
+					else
+					{
+						if ( no_explicit ) return *this;
+						*this = __ucast( *this, new_size );
+					}
 				}
 				break;
 
@@ -260,10 +308,20 @@ namespace vtil::symbolic
 				//
 				if ( lhs->size() > rhs->get().value() )
 				{
+					// If sign extension, double cast.
+					//
+					if ( signed_cast )
+					{
+						if ( no_explicit ) return *this;
+						*this = __cast( *this, new_size );
+						break;
+					}
+
+					// Otherwise mask it and resize.
+					//
 					auto lhs_v = std::move( lhs );
 					auto rhs_v = std::move( rhs );
 					*this = ( lhs_v & expression{ math::fill( rhs_v->get<bitcnt_t>().value() ), lhs_v->size() } ).resize( new_size );
-					break;
 				}
 				// If sizes match, escape cast operator.
 				//
@@ -275,7 +333,7 @@ namespace vtil::symbolic
 				//
 				else
 				{
-					*+rhs = new_size;
+					return *this = lhs->resize( new_size, false );
 				}
 				break;
 
@@ -283,18 +341,13 @@ namespace vtil::symbolic
 			// requested cast is also a signed.
 			//
 			case math::operator_id::cast:
-				// If it was shrinked:
+				// Signed cast should not be used to shrink.
 				//
-				if ( lhs->size() > rhs->get().value() )
-				{
-					auto lhs_v = std::move( lhs );
-					auto rhs_v = std::move( rhs );
-					*this = ( lhs_v & expression{ math::fill( rhs_v->get<bitcnt_t>().value() ), lhs_v->size() } ).resize( new_size, true );
-					break;
-				}
+				fassert( lhs->size() <= rhs->get().value() );
+
 				// If sizes match, escape cast operator.
 				//
-				else if ( lhs->size() == new_size )
+				if ( lhs->size() == new_size )
 				{
 					*this = *std::move( lhs );
 				}
@@ -302,12 +355,13 @@ namespace vtil::symbolic
 				//
 				else if ( signed_cast )
 				{
-					*+rhs = new_size;
+					return *this = lhs->resize( new_size, true );
 				}
 				// Else, convert to unsigned cast since top bits will be zero.
 				//
 				else
 				{
+					if ( no_explicit ) return *this;
 					*this = __ucast( *this, new_size );
 				}
 				break;
@@ -315,28 +369,17 @@ namespace vtil::symbolic
 			// Redirect to conditional output since zx 0 == sx 0.
 			//
 			case math::operator_id::value_if:
-				( +rhs )->resize( new_size, false );
+				if ( rhs.size() != new_size )
+				{
+					rhs.resize( new_size, false );
+					update( false );
+				}
 				break;
-
-			/*// Boolean operators will ignore resizing requests.
-			//
-			case math::operator_id::bit_test:
-			case math::operator_id::greater:
-			case math::operator_id::greater_eq:
-			case math::operator_id::equal:
-			case math::operator_id::not_equal:
-			case math::operator_id::less_eq:
-			case math::operator_id::less:
-			case math::operator_id::ugreater:
-			case math::operator_id::ugreater_eq:
-			case math::operator_id::uless_eq:
-			case math::operator_id::uless:
-				value.resize( new_size, false );
-				break;*/
 
 			// If no handler found:
 			//
 			default:
+				if ( no_explicit ) return *this;
 				if ( signed_cast )
 					*this = __cast( *this, new_size );
 				else
@@ -344,7 +387,7 @@ namespace vtil::symbolic
 				break;
 		}
 
-		update( true );
+		simplify();
 		return *this;
 	}
 
@@ -353,6 +396,15 @@ namespace vtil::symbolic
 	//
 	expression& expression::update( bool auto_simplify )
 	{
+		// Propagate lazyness.
+		//
+		if ( ( lhs && lhs->is_lazy ) ||
+			 ( rhs && rhs->is_lazy ) )
+		{
+			auto_simplify = false;
+			is_lazy = true;
+		}
+
 		// If it's not a full expression tree:
 		//
 		if ( !is_expression() )
@@ -365,10 +417,11 @@ namespace vtil::symbolic
 			//
 			if ( is_constant() )
 			{
-				// Punish for each set bit in [min_{popcnt x}(v, |v|)], in an exponentially decreasing rate.
+				// Punish for each set bit in [min_{msb x + popcnt x}(v, |v|)], in an exponentially decreasing rate.
 				//
 				int64_t cval = *value.get<true>();
-				complexity = sqrt( 1 + std::min( math::popcnt( cval ), math::popcnt( abs( cval ) ) ) );
+				complexity = sqrt( 1 + std::min( math::msb( cval ) + math::popcnt( cval ), 
+								                 math::msb( abs( cval ) ) + math::popcnt( abs( cval ) ) ) );
 
 				// Hash is made up of the bit vector masks and the number of bits.
 				//
@@ -437,22 +490,48 @@ namespace vtil::symbolic
 					value = math::evaluate_partial( op, lhs->value, rhs->value );
 				}
 
+				// Speculative simplification, if value is known replace with a constant, this 
+				// is a major performance boost with lazy expressions as child copies and large 
+				// destruction chains are completely avoided. Lazy expressions are meant to
+				// delay complex simplification rather than block all simplification so this
+				// step is totally fine.
+				//
+				if ( ( is_lazy || auto_simplify ) && value.is_known() )
+				{
+					lhs = {}; rhs = {};
+					op = math::operator_id::invalid;
+					is_lazy = false;
+					return update( false );
+				}
+
 				// Handle size mismatches.
 				//
+				const auto optimistic_size = [ ] ( symbolic::expression::reference& lhs,
+												   symbolic::expression::reference& rhs )
+				{
+
+					bitcnt_t op_size = lhs->size();
+					if ( ( op_size < rhs->size() && math::msb( ~rhs->value.known_zero() ) > op_size ) ||
+						 ( op_size > rhs->size() && math::msb( ~lhs->value.known_zero() ) < rhs->size() ) )
+						op_size = rhs->size();
+					return op_size;
+				};
+
 				switch ( op )
 				{
 					case math::operator_id::bitwise_and:
 					case math::operator_id::bitwise_or:
 					case math::operator_id::bitwise_xor:
 					case math::operator_id::umultiply_high:
-					case math::operator_id::umultiply:
 					case math::operator_id::udivide:
 					case math::operator_id::uremainder:
 					case math::operator_id::umax_value:
 					case math::operator_id::umin_value:
-						if ( lhs->size() != value.size() ) ( +lhs )->resize( value.size(), false );
-						if ( rhs->size() != value.size() ) ( +rhs )->resize( value.size(), false );
+					{
+						lhs.resize( value.size(), false );
+						rhs.resize( value.size(), false );
 						break;
+					}
 					case math::operator_id::multiply_high:
 					case math::operator_id::multiply:
 					case math::operator_id::divide:
@@ -461,17 +540,19 @@ namespace vtil::symbolic
 					case math::operator_id::subtract:
 					case math::operator_id::max_value:
 					case math::operator_id::min_value:
-						if ( lhs->size() != value.size() ) ( +lhs )->resize( value.size(), true );
-						if ( rhs->size() != value.size() ) ( +rhs )->resize( value.size(), true );
+					{
+						lhs.resize( value.size(), true );
+						rhs.resize( value.size(), true );
 						break;
+					}
 					case math::operator_id::ugreater:
 					case math::operator_id::ugreater_eq:
 					case math::operator_id::uless_eq:
 					case math::operator_id::uless:
 					{
-						bitcnt_t op_size = std::max( lhs->size(), rhs->size() );
-						if ( lhs->size() != op_size ) ( +lhs )->resize( op_size, false );
-						if ( rhs->size() != op_size ) ( +rhs )->resize( op_size, false );
+						bitcnt_t op_size = optimistic_size( lhs, rhs );
+						lhs.resize( op_size, false );
+						rhs.resize( op_size, false );
 						break;
 					}
 					case math::operator_id::greater:
@@ -481,9 +562,19 @@ namespace vtil::symbolic
 					case math::operator_id::equal:
 					case math::operator_id::not_equal:
 					{
-						bitcnt_t op_size = std::max( lhs->size(), rhs->size() );
-						if ( lhs->size() != op_size ) ( +lhs )->resize( op_size, true );
-						if ( rhs->size() != op_size ) ( +rhs )->resize( op_size, true );
+						bitcnt_t op_size = optimistic_size( lhs, rhs );
+						lhs.resize( op_size, true );
+						rhs.resize( op_size, true );
+						break;
+					}
+
+					// Convert unsigned multiply to signed multiply.
+					//
+					case math::operator_id::umultiply:
+					{
+						lhs.resize( value.size(), true );
+						rhs.resize( value.size(), true );
+						op = math::operator_id::multiply;
 						break;
 					}
 
@@ -492,9 +583,9 @@ namespace vtil::symbolic
 					case math::operator_id::uequal:
 					case math::operator_id::unot_equal:
 					{
-						bitcnt_t op_size = std::max( lhs->size(), rhs->size() );
-						if ( lhs->size() != op_size ) ( +lhs )->resize( op_size, false );
-						if ( rhs->size() != op_size ) ( +rhs )->resize( op_size, false );
+						bitcnt_t op_size = optimistic_size( lhs, rhs );
+						lhs.resize( op_size, false );
+						rhs.resize( op_size, false );
 						op = op == math::operator_id::uequal ? math::operator_id::equal
 							                                 : math::operator_id::not_equal;
 						break;
@@ -509,16 +600,14 @@ namespace vtil::symbolic
 				complexity = ( lhs->complexity + rhs->complexity ) * 2;
 				fassert( complexity != 0 );
 
-				// If bitshift / rotation, punish additionally.
+				// Multiply with operator complexity coefficient.
 				//
-				if ( op == math::operator_id::shift_left || op == math::operator_id::shift_right ||
-					 op == math::operator_id::rotate_left || op == math::operator_id::rotate_right )
-					complexity *= 2;
+				complexity *= desc->complexity_coeff;
 
-				hash_t operand_hashes[] = { lhs->hash(), rhs->hash() };
 				// If operator is commutative, sort the array so that the
 				// positioning does not matter.
 				//
+				hash_t operand_hashes[] = { lhs->hash(), rhs->hash() };
 				if ( desc->is_commutative )
 					std::sort( operand_hashes, std::end( operand_hashes ) );
 				
@@ -535,14 +624,14 @@ namespace vtil::symbolic
 			//
 			for ( auto& operand : { &lhs, &rhs } )
 			{
-				if ( *operand && operand->reference->is_expression() )
+				if ( *operand && operand->get()->is_expression() )
 				{
 					// Bitwise hint of the descriptor contains +1 or -1 if the operator
 					// is strictly bitwise or arithmetic respectively and 0 otherwise.
 					// This works since mulitplication between them will only be negative
 					// if the hints mismatch.
 					//
-					complexity *= 1 + math::sgn( operand->reference->get_op_desc()->hint_bitwise * desc->hint_bitwise );
+					complexity *= 1 + math::sgn( operand->get()->get_op_desc()->hint_bitwise * desc->hint_bitwise );
 				}
 			}
 			
@@ -554,6 +643,17 @@ namespace vtil::symbolic
 			//
 			if ( auto_simplify ) simplify();
 		}
+
+		// Clear lazyness from children.
+		//
+		if ( is_lazy )
+		{
+			if ( lhs && lhs->is_lazy )
+				( +lhs )->is_lazy = false;
+			if ( rhs && rhs->is_lazy )
+				( +rhs )->is_lazy = false;
+		}
+
 		return *this;
 	}
 
@@ -561,25 +661,24 @@ namespace vtil::symbolic
 	//
 	expression& expression::simplify( bool prettify )
 	{
+		// Reset lazyness.
+		//
+		is_lazy = false;
+
+		// Skip if no point in simplifying.
+		//
+		if ( !prettify && simplify_hint )
+			return *this;
+
 		// By changing the prototype of simplify_expression from f(expression&) to
 		// f(expression::reference&), we gain an important performance benefit that is
 		// a significantly less amount of copies made. Cache will also store references 
 		// this way and additionally we avoid copying where an operand is being simplified
 		// as that can be replaced by a simple swap of shared references.
 		//
-		auto ref = make_local_reference( this );
+		reference ref = make_local_reference( this );
 		simplify_expression( ref, prettify );
-
-		// Only thing that we should be careful about is the case expression->simplify(),
-		// which is problematic since it is not actually a shared reference, which we can
-		// carefully solve with the local reference system (which will assert that, no 
-		// references to it was stored on destructor for us) and making sure to copy data
-		// if the pointer was replaced.
-		//
-		if ( &*ref != this ) 
-			operator=( *ref );
-		else
-			fassert( ref.reference.use_count() == 1 );
+		if ( &*ref != this ) operator=( *ref );
 
 		// Set the simplifier hint to indicate skipping further calls to simplify_expression.
 		//
@@ -591,15 +690,40 @@ namespace vtil::symbolic
 	//
 	bool expression::equals( const expression& other ) const
 	{
+		// Propagate invalid.
+		//
+		if ( !is_valid() )            return !other.is_valid();
+		else if ( !other.is_valid() ) return false;
+
 		// If identical, return true.
 		//
 		if ( is_identical( other ) )
 			return true;
 
+		// Filter by known bits.
+		//
+		if ( ( other.known_one() & known_zero() ) ||
+			 ( other.known_zero() & known_one() ))
+			return false;
+
+		// Try evaluating with 2 random values, if values do not match, expressions cannot be equivalent.
+		//
+		static constexpr auto eval_keys = make_crandom_n<2>();
+		for ( uint64_t key : eval_keys )
+		{
+			auto eval_helper = [ = ] ( const unique_identifier& uid ) 
+			{
+				return uid.hash() ^ key;
+			};
+			if ( this->evaluate( eval_helper ).known_one() != 
+				 other.evaluate( eval_helper ).known_one() )
+				return false;
+		}
+
 		// Simplify both expressions.
 		//
-		expression a = expression{ *this }.simplify();
-		expression b = expression{ other }.simplify();
+		expression a = simplify();
+		expression b = other.simplify();
 
 		// Determine the final bitwise hint.
 		//
@@ -622,45 +746,16 @@ namespace vtil::symbolic
 			       ( a - b ).get().value_or( -1 ) == 0;
 	}
 
-	// Evaluates the expression invoking the callback passed for unknown variables,
-	// this avoids copying of the entire tree and any simplifier calls so is preferred
-	// over *transform(...).get().
-	//
-	math::bit_vector expression::evaluate( const eval_lookup_helper_t& lookup ) const
-	{
-		// If value is known, return as is.
-		//
-		if ( value.is_known() ) 
-			return value;
-		
-		// If variable:
-		//
-		if ( is_variable() )
-		{
-			// If lookup helper passed and succesfully finds the value, use as is.
-			//
-			if ( auto res = lookup ? lookup( uid ) : std::nullopt; res.has_value() )
-				return { *res, size() };
-			
-			// Otherwise return unknown.
-			//
-			return value;
-		}
-
-		// Try to evaluate the result and return.
-		//
-		math::bit_vector result = {};
-		if ( is_unary() )
-			result = math::evaluate_partial( op, {},                      rhs->evaluate( lookup ) );
-		else if ( is_binary() )
-			result = math::evaluate_partial( op, lhs->evaluate( lookup ), rhs->evaluate( lookup ) );
-		return result;
-	}
-
 	// Returns whether the given expression is identical to the current instance.
 	//
 	bool expression::is_identical( const expression& other ) const
 	{
+		// Propagate invalid and self.
+		//
+		if ( !is_valid() )            return !other.is_valid();
+		else if ( !other.is_valid() ) return false;
+		else if ( this == &other )    return true;
+
 		// If hash mismatch, return false without checking anything.
 		//
 		if ( hash() != other.hash() )
@@ -689,15 +784,12 @@ namespace vtil::symbolic
 
 		// If both sides match, return true.
 		//
-		if ( ( lhs == other.lhs || lhs->is_identical( *other.lhs ) ) &&
-			 ( rhs == other.rhs || rhs->is_identical( *other.rhs ) ))
+		if ( lhs->is_identical( *other.lhs ) && rhs->is_identical( *other.rhs ) )
 			return true;
 
 		// If not, check in reverse as well if commutative and return the final result.
 		//
-		return	desc->is_commutative && 
-				( lhs == other.rhs || lhs->is_identical( *other.rhs ) ) &&
-				( rhs == other.lhs || rhs->is_identical( *other.lhs ) );
+		return desc->is_commutative && lhs->is_identical( *other.rhs ) && rhs->is_identical( *other.lhs );
 	}
 
 	// Converts to human-readable format.
@@ -714,5 +806,76 @@ namespace vtil::symbolic
 		if ( is_constant() )      return format::hex( value.get<true>().value() );
 		if ( is_variable() )      return uid.to_string();
 		return "null";
+	}
+
+	// Implement some helpers to conditionally copy.
+	//
+	expression_reference& expression_reference::resize( bitcnt_t new_size, bool signed_cast, bool no_explicit )
+	{
+		if ( new_size != get()->size() )
+			own()->resize( new_size, signed_cast, no_explicit );
+		return *this;
+	}
+	expression_reference expression_reference::resize( bitcnt_t new_size, bool signed_cast, bool no_explicit ) const
+	{
+		return std::move( make_copy( *this ).resize( new_size, signed_cast, no_explicit ) );
+	}
+	expression_reference& expression_reference::simplify( bool prettify, bool* out )
+	{
+		bool simplified;
+		if ( is_valid() && ( prettify || !get()->simplify_hint ) )
+			simplified = simplify_expression( *this, prettify );
+		else
+			simplified = false;
+		if ( out ) *out = simplified;
+		return *this;
+	}
+	expression_reference expression_reference::simplify( bool prettify, bool* out ) const
+	{
+		return std::move( make_copy( *this ).simplify( prettify, out ) );
+	}
+	expression_reference& expression_reference::make_lazy()
+	{
+		if ( !get()->is_lazy )
+			own()->is_lazy = true;
+		return *this;
+	}
+	expression_reference expression_reference::make_lazy() const
+	{
+		return std::move( make_copy( *this ).make_lazy() );
+	}
+
+	// Forward declared redirects for internal use cases.
+	//
+	hash_t expression_reference::hash() const
+	{
+		return is_valid() ? get()->hash() : hash_t{ 0 };
+	}
+	bool expression_reference::is_simple() const
+	{
+		return !is_valid() || get()->simplify_hint;
+	}
+	void expression_reference::update( bool auto_simplify ) 
+	{
+		own()->update( auto_simplify );
+	}
+
+	// Equivalence check.
+	//
+	bool expression_reference::equals( const expression& exp ) const { return !is_valid() ? !exp : get()->equals( exp ); }
+	bool expression_reference::is_identical( const expression& exp ) const { return !is_valid() ? !exp : get()->is_identical( exp ); }
+
+	// Implemented for sinkhole use.
+	//
+	bitcnt_t expression_reference::size() const 
+	{ 
+		return is_valid() ? get()->size() : 0; 
+	}
+
+	// Implemented for logger use.
+	//
+	std::string expression_reference::to_string() const
+	{
+		return is_valid() ? get()->to_string() : "null";
 	}
 };

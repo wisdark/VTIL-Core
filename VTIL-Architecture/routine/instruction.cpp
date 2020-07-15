@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -32,28 +32,26 @@ namespace vtil
 {
 	// Returns whether the instruction is valid or not.
 	//
-	bool instruction::is_valid() const
+	bool instruction::is_valid( bool force ) const
 	{
+#define validate(...) { if( force ) fassert(__VA_ARGS__); else if( !(__VA_ARGS__) ) return false; }
+
 		// Instruction must have a base descriptor assigned.
 		//
-		if ( !base )
-			return false;
+		validate( base );
 
 		// Validate operand count.
 		//
-		if ( operands.size() != base->operand_count() )
-			return false;
+		validate( operands.size() == base->operand_count() );
 
 		// Validate operand types against the expected type.
 		//
 		for ( int i = 0; i < base->operand_types.size(); i++ )
 		{
-			if ( !operands[ i ].is_valid() )
-				return false;
-			if ( base->operand_types[ i ] == operand_type::read_imm && !operands[ i ].is_immediate() )
-				return false;
-			if ( base->operand_types[ i ] == operand_type::read_reg && !operands[ i ].is_register() )
-				return false;
+			validate( operands[ i ].is_valid() );
+			validate( base->operand_types[ i ] != operand_type::read_imm || operands[ i ].is_immediate() );
+			validate( base->operand_types[ i ] != operand_type::read_reg || operands[ i ].is_register() );
+			validate( base->operand_types[ i ] <  operand_type::write || operands[ i ].is_register() );
 		}
 
 		// Validate memory operands.
@@ -62,28 +60,23 @@ namespace vtil
 		{
 			const operand& mem_base = operands[ base->memory_operand_index ];
 			const operand& mem_offset = operands[ base->memory_operand_index + 1 ];
-			if ( !mem_base.is_register() || mem_base.size() != 8 )
-				return false;
-			if ( !mem_offset.is_immediate() )
-				return false;
+			validate( mem_base.is_register() && mem_base.bit_count() == 64 );
+			validate( mem_offset.is_immediate() );
+			validate( access_size() && !( access_size() & 7 ) );
 		}
 
 		// Validate branching operands.
 		//
 		for ( auto& list : { base->branch_operands_rip, base->branch_operands_vip } )
-		{
 			for ( int idx : list )
-			{
-				if ( operands[ idx ].size() != 8 )
-					return false;
-			}
-		}
+				validate( operands[ idx ].bit_count() == 64 );
 		return true;
+#undef validate
 	}
 
-	// Returns the memory address this instruction references.
+	// Returns the memory location this instruction references.
 	//
-	std::pair<register_desc, int64_t> instruction::get_mem_loc() const
+	std::pair<register_desc&, int64_t&> instruction::memory_location()
 	{
 		// Assert that instruction does access memory.
 		//
@@ -91,54 +84,23 @@ namespace vtil
 
 		// Reference the pair of operands used to create the pointer and return them.
 		//
-		const operand& mem_base = operands[ base->memory_operand_index ];
-		const operand& mem_offset = operands[ base->memory_operand_index + 1 ];
-		return { mem_base.reg(), mem_offset.imm().i64 };
+		return {
+			operands[ base->memory_operand_index ].reg(), 
+			operands[ base->memory_operand_index + 1 ].imm().i64 
+		};
 	}
-
-	// Checks whether the instruction reads from the given register or not, and
-	// returns [operand index + 1] if a match is found and zero otherwise.
-	//
-	int instruction::reads_from( const register_desc& rw ) const
+	std::pair<const register_desc&, const int64_t&> instruction::memory_location() const
 	{
-		for ( int i = 0; i < base->operand_types.size(); i++ )
-		{
-			if ( base->operand_types[ i ] != operand_type::write &&
-				 operands[ i ].is_register() &&
-				 operands[ i ].reg().overlaps( rw ) )
-				return i + 1;
-		}
-		return 0;
-	}
+		// Assert that instruction does access memory.
+		//
+		fassert( base->accesses_memory() );
 
-	// Checks whether the instruction reads from the given register or not, and
-	// returns [operand index + 1] if a match is found and zero otherwise.
-	//
-	int instruction::writes_to( const register_desc& rw ) const
-	{
-		for ( int i = 0; i < base->operand_types.size(); i++ )
-		{
-			if ( base->operand_types[ i ] >= operand_type::write && 
-				 operands[ i ].is_register() && 
-				 operands[ i ].reg().overlaps( rw ) )
-				return i + 1;
-		}
-		return 0;
-	}
-
-	// Checks whether the instruction reads from the given register or not, and
-	// returns [operand index + 1] if a match is found and zero otherwise.
-	//
-	int instruction::overwrites( const register_desc& rw ) const
-	{
-		for ( int i = 0; i < base->operand_types.size(); i++ )
-		{
-			if ( base->operand_types[ i ] == operand_type::write && 
-				 operands[ i ].is_register() && 
-				 operands[ i ].reg().overlaps( rw ) )
-				return i + 1;
-		}
-		return 0;
+		// Reference the pair of operands used to create the pointer and return them.
+		//
+		return {
+			operands[ base->memory_operand_index ].reg(),
+			operands[ base->memory_operand_index + 1 ].imm().i64
+		};
 	}
 
 	// Conversion to human-readable format.
@@ -148,13 +110,11 @@ namespace vtil
 		std::string output = format::str( VTIL_FMT_INS_MNM, base->to_string( access_size() ) );
 		for ( auto& op : operands )
 			output += format::str( " " VTIL_FMT_INS_OPR, op.to_string() );
-
 		if ( pad_right )
 		{
 			size_t padding_cnt = ( VTIL_ARCH_MAX_OPERAND_COUNT - operands.size() ) * ( VTIL_FMT_INS_OPR_S + 1 );
 			std::fill_n( std::back_inserter( output ), padding_cnt, ' ' );
 		}
-
 		return output;
 	}
 };

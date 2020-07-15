@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -35,10 +35,14 @@ namespace vtil
 	//
 	struct symbolic_vm : vm_interface
 	{
+		// Flag to make I/O lazy.
+		//
+		bool lazy_io = false;
+
 		// State of the virtual machine.
 		//
 		symbolic::memory memory_state;
-		std::map<register_desc, symbolic::expression> register_state;
+		std::map<register_desc, symbolic::expression::reference> register_state;
 
 		// Construct from memory type, defaults to free.
 		//
@@ -48,18 +52,26 @@ namespace vtil
 		// Reads from the register.
 		// - Value will be unpacked.
 		//
-		symbolic::expression read_register( const register_desc& desc ) override;
+		symbolic::expression::reference read_register( const register_desc& desc ) override;
 
 		// Writes to the register.
 		//
-		void write_register( const register_desc& desc, symbolic::expression value ) override;
+		void write_register( const register_desc& desc, symbolic::expression::reference value ) override;
 
 		// Reads the given number of bytes from the memory.
 		//
-		symbolic::expression read_memory( const symbolic::expression& pointer, size_t byte_count ) override;
+		symbolic::expression::reference read_memory( const symbolic::expression::reference& pointer, size_t byte_count ) override;
 		
 		// Writes the given expression to the memory.
 		//
-		void write_memory( const symbolic::expression& pointer, symbolic::expression value ) override;
+		void write_memory( const symbolic::expression::reference& pointer, symbolic::expression::reference value ) override;
+
+		// Override execute to enforce lazyness.
+		//
+		bool execute( const instruction& ins ) override;
+
+		// Resets the virtual machine state.
+		//
+		void reset() { memory_state.reset(); register_state.clear(); }
 	};
 };

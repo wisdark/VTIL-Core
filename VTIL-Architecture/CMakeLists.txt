@@ -1,18 +1,14 @@
-# VTIL-Architecture target
-#
+project(VTIL-Architecture)
 
-set(architecture_SOURCES arch/instruction_desc.cpp
-    routine/basic_block.cpp
-    routine/instruction.cpp
-    routine/routine.cpp
-    routine/serialization.cpp
-    symex/pointer.cpp
-    symex/variable.cpp
-    vm/interface.cpp
-    vm/symbolic.cpp
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS *.cpp *.hpp)
+file(GLOB_RECURSE INCLUDES CONFIGURE_DEPENDS includes/*)
+
+add_library(${PROJECT_NAME} STATIC
+    ${SOURCES}
+    ${INCLUDES}
 )
 
-add_library(architecture STATIC ${architecture_SOURCES})
-target_include_directories(architecture PUBLIC "./includes")
-target_link_libraries(architecture common)
-target_link_libraries(architecture symex)
+source_group(TREE ${PROJECT_SOURCE_DIR} FILES ${SOURCES} ${INCLUDES})
+
+target_include_directories(${PROJECT_NAME} PUBLIC includes)
+target_link_libraries(${PROJECT_NAME} VTIL-Common VTIL-SymEx)

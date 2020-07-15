@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -31,7 +31,7 @@
 
 namespace vtil::assert
 {
-	static void or_die( bool condition, const char* file_name, const char* condition_str, uint32_t line_number )
+	static void or_die( bool condition, const char* file_name, uint32_t line_number, const char* condition_str )
 	{
 		if ( condition ) return;
 		logger::error
@@ -44,11 +44,12 @@ namespace vtil::assert
 	}
 };
 
+#define fassert__stringify(x) #x
+#define fassert(...) vtil::assert::or_die( bool(__VA_ARGS__), __FILE__, __LINE__, fassert__stringify(__VA_ARGS__) )
+#define unreachable() vtil::logger::error( "Illegal control flow. %s:%d", __FILE__, __LINE__ )
+
 #ifdef _DEBUG
-	#define fassert__stringify(x) #x
-	#define fassert(x) vtil::assert::or_die( (x), __FILE__, fassert__stringify(x), __LINE__ )
-	#define unreachable() vtil::assert::or_die( false, __FILE__, "Illegal control flow.", __LINE__ )
+	#define dassert(...) fassert(__VA_ARGS__)
 #else
-	#define fassert(...)
-	#define unreachable() vtil::logger::impl::noreturn_helper()
+	#define dassert(...)
 #endif

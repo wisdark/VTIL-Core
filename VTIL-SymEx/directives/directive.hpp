@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -33,7 +33,7 @@
 
 namespace vtil::symbolic::directive
 {
-    // Directive variables with mathching constraints:
+    // Directive variables with matching constraints:
     //
     enum matching_type
     {
@@ -92,6 +92,7 @@ namespace vtil::symbolic::directive
             // - __mask_unk(x), will generate the mask for known zero bits.
             mask_zero,
 
+
             // Evaluation-time Message
             // -----------------------
             // - __unreachable(), indicates that this directive should never be matched and if it is,
@@ -146,7 +147,42 @@ namespace vtil::symbolic::directive
     //
     struct instance : math::operable<instance>
     {
-        using reference = shared_reference<instance>;
+        // Simple copyable unique pointer implementation.
+        //
+        struct reference
+        {
+            instance* ptr = nullptr;
+            
+            // Construct by implicit null or instance value.
+            //
+            reference() {}
+            reference( const instance& i );
+            reference( instance&& i );
+
+            // Copy / Move from another reference.
+            //
+            reference( const reference& o );
+            reference( reference&& o );
+            reference& operator=( reference&& o );
+            reference& operator=( const reference& o );
+
+            // Destructor deletes the value.
+            //
+            ~reference();
+
+            // Null check.
+            //
+            explicit operator bool() const { return ptr; }
+            
+            // Pointer interface.
+            //
+            operator instance*() { return ptr; }
+            operator const instance*() const { return ptr; }
+            instance& operator*() { return *ptr; }
+            const instance& operator*() const { return *ptr; }
+            instance* operator->() { return ptr; }
+            const instance* operator->() const { return ptr; }
+        };
 
         // If symbolic variable, the identifier of the variable
         // and type of expressions it can match.
@@ -211,8 +247,8 @@ namespace vtil::symbolic::directive
 
        Used names are kept track using the table below:
        -------------------------------------------------------
-       | Free                                    | Used      |
-       | ΑΝνΒΞξΓγΟοΔπΕΡρΖζσςΗηΤτΥυΙιΦφΚκΧχΛλψΜμω | ΠΣΘΩαβδεΨ |
+       | Free                                 | Used         |
+       | ΑΝνΒΞξΓγΟοΔπΕΡρΖσςΗΤτΥυΙιΦφΚκΧχΛψΜμω | ληΠΣΘΩαζβδεΨ |
        -------------------------------------------------------
     */
 
@@ -222,20 +258,23 @@ namespace vtil::symbolic::directive
     static const instance B = { "β", 1 };
     static const instance C = { "δ", 2 };
     static const instance D = { "ε", 3 };
+    static const instance E = { "ζ", 4 };
+    static const instance F = { "η", 5 };
+    static const instance G = { "λ", 6 };
 
     // Special variables, one per type:
     // 
-    static const instance V = { "Π", 4, match_variable };
-    static const instance U = { "Σ", 5, match_constant };
-    static const instance Q = { "Ω", 6, match_expression };
-    static const instance W = { "Ψ", 7, match_non_constant };
-    static const instance X = { "Θ", 8, match_non_expression };
+    static const instance V = { "Π", 7, match_variable };
+    static const instance U = { "Σ", 8, match_constant };
+    static const instance Q = { "Ω", 9, match_expression };
+    static const instance W = { "Ψ", 10, match_non_constant };
+    static const instance X = { "Θ", 11, match_non_expression };
 
     // To avoid string comparison each directive variable gets assigned a 
-    // lookup table index. Maximum index is an arbitrary constant to avoid heap 
+    // lookup table index. This is an arbitrary constant to avoid heap 
     // allocation for the lookup table.
     //
-    static constexpr uint32_t max_lookup_index = 8;
+    static constexpr uint32_t number_of_lookup_indices = 12;
 
     // Operable-like directive operators.
     //
@@ -247,6 +286,10 @@ namespace vtil::symbolic::directive
     static instance __mask_unk( const instance& a ) { return { tagged<directive_op_desc::mask_unknown>, a }; }
     static instance __mask_knw1( const instance& a ) { return { tagged<directive_op_desc::mask_one>, a }; }
     static instance __mask_knw0( const instance& a ) { return { tagged<directive_op_desc::mask_zero>, a }; }
+
+    // Changes the characteristics of the first variable to match the second.
+    //
+    static instance c( const instance& o, const instance& i ) { return { o.id, o.lookup_index, i.mtype }; }
 };
 
 // Implement comparison operators between [directive::directive_op_desc] x [math::operator_id].

@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -36,7 +36,7 @@
 // [Configuration]
 // Determine whether we should use safe variants or not.
 //
-#if _DEBUG && not defined(VTIL_VARIANT_SAFE)
+#if defined(_DEBUG) && not defined(VTIL_VARIANT_SAFE)
 	#if defined(_CPPRTTI)
 		#define VTIL_VARIANT_SAFE	_CPPRTTI
 	#elif defined(__GXX_RTTI)
@@ -54,7 +54,7 @@
 // Determine the maximum size of types we should inline.
 //
 #ifndef VTIL_VARIANT_INLINE_LIMIT
-	#define VTIL_VARIANT_INLINE_LIMIT 0x100
+	#define VTIL_VARIANT_INLINE_LIMIT 0x90
 #endif
 
 namespace vtil
@@ -89,8 +89,8 @@ namespace vtil
 			//
 			struct
 			{
-				size_t copy_size : 32;
-				size_t copy_align : 32;
+				uint64_t copy_size : 32;
+				uint64_t copy_align : 32;
 			};
 
 			// Otherwise pointer to helper.
@@ -171,7 +171,7 @@ namespace vtil
 
 		// Assignment by move/copy both reset current value and redirect to constructor.
 		//
-		variant& operator=( variant&& vo ) { reset(); return *new ( this ) variant( std::move( vo ) ); }
+		variant& operator=( variant&& vo ) noexcept { reset(); return *new ( this ) variant( std::move( vo ) ); }
 		variant& operator=( const variant& o ) { reset(); return *new ( this ) variant( o ); }
 
 		// Variant does not have a value if the copy field is null.
@@ -182,7 +182,7 @@ namespace vtil
 		// Gets the address of the object with the given properties.
 		// - Will throw assert failure if the variant is empty.
 		//
-		size_t get_address( size_t size, size_t align ) const;
+		uint64_t get_address( size_t size, size_t align ) const;
 
 		// Allocates the space for an object of the given properties and returns the pointer.
 		//

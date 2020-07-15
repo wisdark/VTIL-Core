@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -34,7 +34,7 @@ namespace vtil::symbolic::directive
     // List of universal simplifiers, they have to reduce complexity or keep it equal
     // at the very least to not cause an infinity loop.
     //
-    static const std::pair<instance::reference, instance::reference> universal_simplifiers[] =
+    static const std::pair<instance, instance> universal_simplifiers[] =
     {
         // TODO: Arithmetic operators, */% etc.
         //
@@ -55,6 +55,14 @@ namespace vtil::symbolic::directive
         { A&A,                                                A },
         { A^0,                                                A },
         { A&-1,                                               A },
+        { A*1,                                                A },
+        { A*1u,                                               A },
+        { A/1,                                                A },
+        { A/1u,                                               A },
+        { __rotl(A,0),                                        A },
+        { __rotr(A,0),                                        A },
+        { A>>0,                                               A },
+        { A<<0,                                               A },
         { A==1,                                               __iff(__bcnt(A)==1u, A) },
         { A!=0,                                               __iff(__bcnt(A)==1u, A) },
 
@@ -69,10 +77,12 @@ namespace vtil::symbolic::directive
         { A+(~A),                                            -1 },
         { A^(~A),                                            -1 },
         { A|(~A),                                            -1 },
-        { __rotl(A,0),                                        A },
-        { __rotr(A,0),                                        A },
-        { A>>0,                                               A },
-        { A<<0,                                               A },
+        { A/A,                                                1 },
+        { udiv(A,A),                                          1 },
+        { A%A,                                                0 },
+        { urem(A,A),                                          0 },
+        { A*0,                                                0 },
+        { A*0u,                                               0 },
         //{ A>>B,                                             __iff(B>=__bcnt(A), 0) },     [Removed as partial evaluator will take care of this]
         //{ A<<B,                                             __iff(B>=__bcnt(A), 0) },     [Removed as partial evaluator will take care of this]
 
@@ -81,11 +91,18 @@ namespace vtil::symbolic::directive
         { A+(-B),                                             A-B },
         { ~((~A)+B),                                          A-B },
         { ~(A-B),                                             (~A)+B },
+        { (~A+U),                                             (U-1)-A },
 
         // NEG conversion.
         //
         { ~(A-1),                                             -A },
         { 0-A,                                                -A },
+
+        // MUL conversion.
+        //
+        { A+A,                                                A*2 },
+        { A*U-A,                                              A*(U-1) },
+        { A*U+A,                                              A*(U+1) },
 
         // Invert comparison.
         //
@@ -100,30 +117,11 @@ namespace vtil::symbolic::directive
         { ~__uless(A,B),                                      __ugreat_eq(A,B) },
         { ~__uless_eq(A,B),                                   __ugreat(A,B) },
 
-        // Evaluate partial comparison.
-        //
-        { A>=B,                                               __iff(A==B, 1) },
-        { A>=B,                                               __iff(A!=B, A>B) },
-        { A<=B,                                               __iff(A==B, 1) },
-        { A<=B,                                               __iff(A!=B, A<B) },
-        { __ugreat_eq(A,B),                                   __iff(A==B, 1) },
-        { __ugreat_eq(A,B),                                   __iff(A!=B, __ugreat(A,B)) },
-        { __uless_eq(A,B),                                    __iff(A==B, 1) },
-        { __uless_eq(A,B),                                    __iff(A!=B, __uless(A,B)) },
-
-        // Evaluate based on equality.
-        //
-        { A>B,                                                __iff(A==B, 0) },
-        { A<B,                                                __iff(A==B, 0) },
-        { __ugreat(A,B),                                      __iff(A==B, 0) },
-        { __uless(A,B),                                       __iff(A==B, 0) },
-
         // NOT conversion.
         //
         { A^-1,                                               ~A },
-        { A==0,                                               __iff((__mask_knw1(A)|__mask_unk(A))==1u, ~__ucast(A,1)) },
-        { A!=1,                                               __iff((__mask_knw1(A)|__mask_unk(A))==1u, ~__ucast(A,1)) },
-        { -A,                                                 __iff((__mask_knw1(A)|__mask_unk(A))==1u, ~__ucast(A,1)) },
+        { A==0,                                               __iff(__bcnt(A)==1u, A^1) },
+        { A!=1,                                               __iff(__bcnt(A)==1u, A^1) },
 
         // XOR conversion.
         //
@@ -133,10 +131,12 @@ namespace vtil::symbolic::directive
         { (~(A|B))|(A&B),                                     ~(A^B) },
         { ((~A)&(~B))|(A&B),                                  ~(A^B) },
 
-        // Simplify AND OR NOT.
+        // Simplify AND OR NOT XOR.
         //
         { A&(A|B),                                            A },
         { A|(A&B),                                            A },
+        { A^(A&B),                                            A&~B },
+        { A^(A|B),                                            B&~A },
 
         // Simplify rotation count.
         //
@@ -186,15 +186,56 @@ namespace vtil::symbolic::directive
 
         // Merge ucast combinations.
         //
-        { __ucast(A,U)|__ucast(B,U),                          __iff(__bcnt(A)>=__bcnt(B), __ucast(!(A|B),U)) },
-        { __ucast(A,U)&__ucast(B,U),                          __iff(__bcnt(A)>=__bcnt(B), __ucast(!(A&B),U)) },
-        { __ucast(A,U)^__ucast(B,U),                          __iff(__bcnt(A)>=__bcnt(B), __ucast(!(A^B),U)) },
+        { __ucast(A,U)|__ucast(B,U),                          __iff(__bcnt(A)>=__bcnt(B), __ucast(A|B,U)) },
+        { __ucast(A,U)&__ucast(B,U),                          __iff(__bcnt(A)>=__bcnt(B), __ucast(A&B,U)) },
+        { __ucast(A,U)^__ucast(B,U),                          __iff(__bcnt(A)>=__bcnt(B), __ucast(A^B,U)) },
+
+        // Simplify manual sign extension.
+        //
+        { __ucast(A,B)|(__ucast((0x1+~(A>>U)), B)<<C),        __iff((B>__bcnt(A))&(U==(__bcnt(A)-1))&(C==__bcnt(A))&(__bcnt(A)!=1), __cast(A,B)) },
+        { __ucast(A,B)|((~(__ucast(A,B)>>U)+0x1)<<C),         __iff((B>__bcnt(A))&(U==(__bcnt(A)-1))&(C==__bcnt(A))&(__bcnt(A)!=1), __cast(A,B)) },
+        { (((((~(A>>B))|-0x2)+0x1)<<U)|A),                    __iff((U==(B+1))&(__bcnt(A)!=1), __cast(__ucast(A,U),__bcnt(A))) },
+       
+        /*// Prefer immediates with their real sign. 
+        //
+        { A+U,                                               __iff(U<0, A-!(-U)) },
+        { A-U,                                               __iff(U<0, A+!(-U)) },
+
+        // MUL simplification.
+        //
+        { (-A)*(-B),                                         A*B },
+        { A*~B,                                              (-A)*B-A },
+
+        // MBA normalization.
+        //
+        { A*(B|C),                                           A*(B+C)-A*(B&C) },
+        { A*(B^C),                                           A*(B+C)-A*((B&C)<<1) },
+        { A+(B|C),                                           (A+B+C)-(B&C) },
+        { A+(B^C),                                           (A+B+C)-((B&C)<<1) },
+        { (B|C)-A,                                           (B+C-A)-(B&C) },
+        { (B^C)-A,                                           (B+C-A)-((B&C)<<1) },
+		{ A-(B|C),                                           (A-B-C)+(B&C) },
+        { A-(B^C),                                           (A-B-C)+((B&C)<<1) },
+        { A*(B+C),                                           A*B+A*C },
+        { A*(B-C),                                           A*B-A*C },
+        { A*(B&~C),                                          A*B+(-A)*(B&C) },
+          
+        // MBA to bitwise.
+        //
+        { A-(A&B),                                           A&~B },
+        { A+(B&~A),                                          A|B },
+        { (A+B)+((A&B)*-2),                                  A^B },
+        { (A+B)-((A&B)*2),                                   A^B },
+        { (A+B)-((A&B)<<1),                                  A^B },
+        { (A-B)+((~A&B)*2),                                  A^B },
+        { (A-B)+((~A&B)<<1),                                 A^B },
+        { U-(c(X,U)&B),                                      U&!(~X|~B) },*/
     };
 
     // Describes the way operands of two operators join each other.
     // - Has no obligation to produce simple output, should be checked.
     //
-    static const std::pair<instance::reference, instance::reference> join_descriptors[] =
+    static const std::pair<instance, instance> join_descriptors[] =
     {
         // TODO: Arithmetic operators, */% etc.
         // TODO: Should we add ADD and SUB to bitwise despite the partial evaluator?
@@ -207,7 +248,7 @@ namespace vtil::symbolic::directive
 
         // -- Special OR substitute to ADD:
         //
-        { A+B,                                                __iff( ((__mask_knw1(A)|__mask_unk(A))&(__mask_knw1(B)|__mask_unk(B)))==0u, A|B)},
+        { A+B,                                                __iff(((__mask_knw1(A)|__mask_unk(A))&(__mask_knw1(B)|__mask_unk(B)))==0u, A|B)},
 
         // ADD:
         //
@@ -221,7 +262,7 @@ namespace vtil::symbolic::directive
         { A-(B-C),                                            !(A+C)-B },
         { A-(B-C),                                            !(A-B)+C },
         { (B+C)-A,                                            !(B-A)+C },
-        { (B-C)-A,                                            !B-(A+C) },
+        { (B-C)-A,                                            B-!(A+C) },
         { (B-C)-A,                                            !(B-A)-C },
 
         // OR:
@@ -232,7 +273,7 @@ namespace vtil::symbolic::directive
         { A|(B&C),                                            A|(!(A|B)&C) },
         { A|(B^C),                                            A|s(!(B&s(~A))^s(C&(~A))) },
         { A|(B<<U),                                           !(!(A>>U)|B)<<U|s(A&((1<<U)-1)) },
-        { A|(B>>U),                                           !(!(A<<U)|B)>>U|s(A&(~(-1<<U))) },
+        { A|(B>>U),                                           !(!(A<<U)|B)>>U|s(A&(~((-1<<U)>>U))) },
         { A|(__rotl(B,C)),                                    __rotl(!(B|s(__rotr(A,C))), C) },
         { A|(__rotr(B,C)),                                    __rotr(!(B|s(__rotl(A,C))), C) },
         { A|~B,                                               ~!(B&s(~A)) },
@@ -253,9 +294,12 @@ namespace vtil::symbolic::directive
 
         // XOR:
         //
+        //{ A^(B&C),                                            s(~(B&!(A&C)))&s(A|(B&C)) }, 
+        { A^(B&C),                                            s(A|(B&C))&s(~(B&!(A&C))) },
+        { A^(B|C),                                            s(B|!(A|C))&s(~(A&(B|C))) },
         { A^(B^C),                                            B^!(A^C) },
         { A^(B<<U),                                           !(!(A>>U)^B)<<U|s(A&((1<<U)-1)) },
-        { A^(B>>U),                                           !(!(A<<U)^B)>>U|s(A&(~(-1<<U))) },
+        { A^(B>>U),                                           !(!(A<<U)^B)>>U|s(A&(~((-1<<U)>>U))) },
         { A^(__rotl(B,C)),                                    __rotl(!(B^s(__rotr(A,C))), C) },
         { A^(__rotr(B,C)),                                    __rotr(!(B^s(__rotl(A,C))), C) },
         { A^~B,                                               !(~A)^B },
@@ -313,58 +357,32 @@ namespace vtil::symbolic::directive
         { ~__rotl(A,C),                                       __rotl(!~A,C) },
         { ~__rotr(A,C),                                       __rotr(!~A,C) },
 
-        // Comparison simplifiers: [TODO: Complete]
+        // MUL:
         //
-        { (A+B)>C,                                            A>!(C-B) },
-        { (A-B)>C,                                            A>!(C+B) },
-        //{ __ugreat(A+B, C),                                  __uless(A,!(C-B)) },
-        //{ __ugreat(A-B, C),                                  __uless(A,!(C+B)) },
-        { (A+B)>=C,                                           A>=!(C-B) },
-        { (A-B)>=C,                                           A>=!(C+B) },
-        //{ __ugreat_eq(A+B, C),                               __uless_eq(A,!(C-B)) },
-        //{ __ugreat_eq(A-B, C),                               __uless_eq(A,!(C+B)) },
-        { (A+B)==C,                                           A==!(C-B) },
-        { (A-B)==C,                                           A==!(C+B) },
-        { (A+B)!=C,                                           A!=!(C-B) },
-        { (A-B)!=C,                                           A!=!(C+B) },
-        { (A+B)<=C,                                           A<=!(C-B) },
-        { (A-B)<=C,                                           A<=!(C+B) },
-        //{ __uless_eq(A+B, C),                                __ugreat_eq(A,!(C-B)) },
-        //{ __uless_eq(A-B, C),                                __ugreat_eq(A,!(C+B)) },
-        { (A+B)<C,                                            A<!(C-B) },
-        { (A-B)<C,                                            A<!(C+B) },
-        //{ __uless(A+B, C),                                   __ugreat(A,!(C-B)) },
-        //{ __uless(A-B, C),                                   __ugreat(A,!(C+B)) },
+        { (A+B)*C,                                           !(A*C)+s(B*C) },
+        { (A+B)*C,                                           s(A*C)+!(B*C) },
+        { (A-B)*C,                                           !(A*C)-s(B*C) },
+        { (A-B)*C,                                           s(A*C)-!(B*C) },
+        { A*(B*C),                                           !(A*C)*B },
+        { A*-B,                                              !(s(-A)*B) },
+        { (A*B)+(A*C),                                       A*!(B+C) },
+        { (A*B)-(A*C),                                       A*!(B-C) },
 
-        { A==B,                                               !(A-B)==0u },
-        { A==B,                                               !(A^B)==0u },
-        { A!=B,                                               !(A-B)!=0u },
-        { A!=B,                                               !(A^B)!=0u },
+        // Lower immediate urem/udiv/mul into and/shr/shl where possible.
+        //
+        { A*U,                                                __iff(__popcnt(U)==1, A<<!(__bsf(U)-1)) },
+        { A+(A<<U),                                           A*!(1 + (1<<U)) },
+        //{ B+A*U,                                              __iff(__popcnt(-U)==1, B-(A<<!(__bsf(-U)-1))) }, 
+        //{ B+(A<<U),                                           B+A*!(1<<U) }, 
+        //{ B-(A<<U),                                           B-A*!(1<<U) }, 
+        //{ B*(A<<U),                                           B*A*!(1<<U) }, 
+        { urem(A,U),                                          __iff(__popcnt(U)==1, A&!(U-1)) },
+        { udiv(A,U),                                          __iff(__popcnt(U)==1, A>>!(__bsf(U)-1)) },
 
-        { (A^B)==C,                                           !(C^B)==A },
+        // Manually added comparison simplifiers:
+        //
         { (A<<B)==C,                                          s((A<<B)>>B)==s(C>>B) },
         { (A>>B)==C,                                          s((A>>B)<<B)==s(C<<B) },
-            
-        { A>B,                                                !(~A)<s(~B) },
-        { A>=B,                                               !(~A)<=s(~B) },
-        { __ugreat(A,B),                                      __uless(!(~A),s(~B)) },
-        { __ugreat_eq(A,B),                                   __uless_eq(!(~A),s(~B)) },
-        { A==B,                                               !(~A)==s(~B) },
-        { A!=B,                                               !(~A)!=s(~B) },
-        { __uless_eq(A,B),                                    __ugreat_eq(!(~A),s(~B)) },
-        { __uless(A,B),                                       __ugreat(!(~A),s(~B)) },
-        { A<=B,                                               !(~A)>=s(~B) },
-        { A<B,                                                !(~A)<s(~B) },
-            
-        { A>B,                                                !(-A)<s(-B) },
-        { A>=B,                                               !(-A)<=s(-B) },
-        { A==B,                                               !(-A)==s(-B) },
-        { A!=B,                                               !(-A)!=s(-B) },
-        { A<=B,                                               !(-A)>=s(-B) },
-        { A<B,                                                !(-A)>s(-B) },
-
-
-
         { ((A<<B)|C)==0,                                      __iff(A==((A<<B)>>B), (A|C)==0u ) },
         { (A|B)==0,                                           s(A==0) & s(B==0) },
         { __ucast(A,B)==C,                                    __iff(__bcnt(A)<=__bcnt(C), __iff(C==__ucast(C,__bcnt(A)), A==s(__ucast(C,__bcnt(A))))) },
@@ -373,10 +391,11 @@ namespace vtil::symbolic::directive
 
     // Grouping of simple representations into more complex directives.
     //
-    static const std::pair<instance::reference, instance::reference> pack_descriptors[] =
+    static const std::pair<instance, instance> pack_descriptors[] =
     {
-        { (A>>B)&1,                                           __bt(A,B) },
-        { (A&B)>>C,                                           __iff((B>>C)==1u, __bt(A,C)) },
+        { __ucast(A>>B, 0x1),                                 __bt(A, B) },
+        { (A>>B)&1,                                           __ucast(__bt(A,B),__bcnt(A)) },
+        { (A&B)>>C,                                           __iff((B>>C)==1u, __ucast(__bt(A,C),__bcnt(A))) },
         { __if(A<=B,A)|__if(A>B,B),                           __min(A,B) },
         { __if(A<=B,A)+__if(A>B,B),                           __min(A,B) },
         { __if(A>=B,A)|__if(A<B,B),                           __max(A,B) },
@@ -387,15 +406,16 @@ namespace vtil::symbolic::directive
         { __if(__ugreat_eq(A,B),A)+__if(__uless(A,B),B),      __umax(A,B) },
         { (~(A+(-1)))&B,                                      __iff((__mask_unk(A)|__mask_knw1(A))==1u, __if(s(__ucast(A,1)),B)) },
         { (~(A-1))&B,                                         __iff((__mask_unk(A)|__mask_knw1(A))==1u, __if(s(__ucast(A,1)),B)) },
+        { (-A)&B,                                             __iff((__mask_unk(A)|__mask_knw1(A))==1u, __if(s(__ucast(A,1)),B)) },
         { ((A+(-1)))&B,                                       __iff((__mask_unk(A)|__mask_knw1(A))==1u, __if(s(__ucast(~A,1)),B)) },
         { ((A-1))&B,                                          __iff((__mask_unk(A)|__mask_knw1(A))==1u, __if(s(__ucast(~A,1)),B)) },
     };
 
     // Conversion from more complex directives into simple representations.
     //
-    static const std::pair<instance::reference, instance::reference> unpack_descriptors[] =
+    static const std::pair<instance, instance> unpack_descriptors[] =
     {
-        { __bt(A,B),                                          (A>>B)&1 },
+        { __bt(A,B),                                          __ucast((A&(1<<B))>>B,1) },
         { __min(A,B),                                         __if(A<=B,A)|__if(A>B,B) },
         { __max(A,B),                                         __if(A>=B,A)|__if(A<B,B) },
         { __umin(A,B),                                        __if(__uless_eq(A,B),A)|__if(__ugreat(A,B),B) },

@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -32,8 +32,37 @@
 #pragma warning(disable:4267)
 namespace vtil
 {
-	using magic_t = uint32_t;
-	static constexpr magic_t vtil_magic = 'LITV';
+#pragma pack(push, 1)
+	struct file_header
+	{
+		uint32_t magic_1 = 'LITV';
+		architecture_identifier arch_id;
+		uint8_t zero_pad = 0;				// Intentionally left zero to make sure non-binary streams fail.
+		uint16_t magic_2 = 0xDEAD;
+	};
+	static_assert( sizeof( file_header ) == 8, "Invalid file header size." );
+#pragma pack(pop)
+
+	// Serialization of VTIL calling conventions.
+	//
+	void serialize( std::ostream& out, const call_convention& in )
+	{
+		serialize( out, in.volatile_registers );
+		serialize( out, in.param_registers );
+		serialize( out, in.retval_registers );
+		serialize( out, in.frame_register );
+		serialize( out, in.shadow_space );
+		serialize( out, in.purge_stack );
+	}
+	void deserialize( std::istream& in, call_convention& out )
+	{
+		deserialize( in, out.volatile_registers );
+		deserialize( in, out.param_registers );
+		deserialize( in, out.retval_registers );
+		deserialize( in, out.frame_register );
+		deserialize( in, out.shadow_space );
+		deserialize( in, out.purge_stack );
+	}
 
 	// Serialization of VTIL blocks.
 	//
@@ -103,13 +132,24 @@ namespace vtil
 	//
 	void serialize( std::ostream& out, const routine* rtn )
 	{
-		// Write the magic.
+		// Write the file header.
 		//
-		serialize( out, vtil_magic );
+		serialize( out, file_header{ .arch_id = rtn->arch_id } );
 
 		// Write the entry point VIP.
 		//
 		serialize( out, rtn->entry_point->entry_vip );
+
+		// Write the call conventions used.
+		//
+		serialize( out, rtn->routine_convention );
+		serialize( out, rtn->subroutine_convention );
+		serialize<clength_t>( out, rtn->spec_subroutine_conventions.size() );
+		for ( auto& [k, v] : rtn->spec_subroutine_conventions )
+		{
+			serialize( out, k );
+			serialize( out, v );
+		}
 
 		// Write the number of blocks we will serialize.
 		//
@@ -120,23 +160,39 @@ namespace vtil
 		for ( auto& pair : rtn->explored_blocks )
 			serialize( out, pair.second );
 	}
-	routine* deserialize( std::istream& in, routine*& rtn )
+	void deserialize( std::istream& in, routine*& rtn )
 	{
-		// Read and validate the magic.
+		// Read and validate the file header.
 		//
-		magic_t magic;
-		deserialize( in, magic );
-		if ( magic != vtil_magic )
-			throw std::runtime_error( "VTIL magic mismatch." );
+		file_header hdr;
+		deserialize( in, hdr );
+		if ( hdr.magic_1 != file_header{}.magic_1 ||
+			 hdr.zero_pad != file_header{}.zero_pad ||
+			 hdr.magic_2 != file_header{}.magic_2 )
+			throw std::runtime_error( "Invalid VTIL header." );
 
 		// Create a new routine.
 		//
-		rtn = new routine;
+		rtn = new routine( hdr.arch_id );
 
 		// Read the entry point VIP.
 		//
 		vip_t entry_vip;
 		deserialize( in, entry_vip );
+
+		// Read the call conventions used.
+		//
+		deserialize( in, rtn->routine_convention );
+		deserialize( in, rtn->subroutine_convention );
+
+		clength_t num_convs;
+		deserialize( in, num_convs );
+		while ( rtn->spec_subroutine_conventions.size() != num_convs )
+		{
+			vip_t k; call_convention v;
+			deserialize( in, k ); deserialize( in, v );
+			rtn->spec_subroutine_conventions[ k ] = v;
+		}
 
 		// Read the number of blocks serialized and invoke basic-block 
 		// deserialization until number of blocks read matches.
@@ -154,7 +210,31 @@ namespace vtil
 		rtn->entry_point = rtn->explored_blocks[ entry_vip ];
 		if ( !rtn->entry_point )
 			throw std::runtime_error( "Failed resolving entry point." );
-		return rtn;
+
+		// Determine last internal id.
+		//
+		uint64_t last_internal_id = 0;
+		for ( auto& [v, block] : rtn->explored_blocks )
+		{
+			for ( auto& ins : *block )
+			{
+				for ( auto& op : ins.operands )
+				{
+					if ( op.is_register() && op.reg().is_internal() )
+					{
+						last_internal_id = std::max( 
+							last_internal_id, 
+							op.reg().local_id + 1 
+						);
+					}
+				}
+			}
+		}
+		rtn->last_internal_id = last_internal_id;
+
+		// Flush paths.
+		//
+		rtn->flush_paths();
 	}
 
 	// Serialization of VTIL instructions.
@@ -179,8 +259,18 @@ namespace vtil
 		//
 		std::string name;
 		deserialize( in, name );
-		out.base = std::find( std::begin( instruction_list ), std::end( instruction_list ), name );
-		if( out.base == std::end( instruction_list ) )
+
+		out.base = nullptr;
+		for ( auto ins : get_instruction_list() )
+		{
+			if ( ins->name == name )
+			{
+				out.base = ins;
+				break;
+			}
+		}
+		
+		if ( !out.base )
 			throw std::runtime_error( "Failed resolving instruction." );
 
 		// Read rest as is and validate.

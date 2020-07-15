@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -66,14 +66,16 @@ namespace vtil
 
 			// Path restriction state.
 			//
+			const path_set* paths_allowed = nullptr;
 			bool is_path_restricted = false;
-			std::set<container_type*> paths_allowed;
 
 			// Default constructor and the block-bound constructor.
 			//
 			riterator_base() {}
-			riterator_base( container_type* ref, const iterator_type& i ): container( ref ), iterator_type( i ) {}
-			template<typename X, typename Y> riterator_base( const riterator_base<X, Y>& o ) : container( o.container ), iterator_type( Y( o ) ) {}
+			riterator_base( container_type* ref, const iterator_type& i ) 
+				: container( ref ), iterator_type( i ) {}
+			template<typename X, typename Y> riterator_base( const riterator_base<X, Y>& o ) 
+				: container( o.container ), iterator_type( Y( o ) ), is_path_restricted( o.is_path_restricted ), paths_allowed( o.paths_allowed ) {}
 
 			// Override equality operators to check container first.
 			//
@@ -86,70 +88,41 @@ namespace vtil
 			bool is_begin() const { return !container || ((const iterator_type&)*this)==container->stream.begin(); }
 			bool is_valid() const { return !is_begin() || !is_end(); }
 
-			// Simple helper used to trace paths towards a container.
-			//
-			static std::set<container_type*> path_to( container_type* src, container_type* dst,
-													  bool forward, std::set<container_type*> path = {} )
-			{
-				// If we've already tried this path, fail.
-				//
-				if ( path.find( src ) != path.end() )
-					return {};
-
-				// Insert <src> into path.
-				//
-				path.insert( src );
-
-				// If we reached our destination, report success.
-				//
-				if ( src == dst )
-					return path;
-
-				// Otherwise, recurse.
-				//
-				std::set<container_type*> paths_allowed;
-				for ( container_type* blk : ( forward ? src->next : src->prev ) )
-				{
-					// If path ended up at destination, mark all paths "allowed".
-					//
-					std::set<container_type*> path_taken = path_to( blk, dst, forward, path );
-					if ( !path_taken.empty() )
-						paths_allowed.insert( path_taken.begin(), path_taken.end() );
-				}
-				return paths_allowed;
-			}
-
 			// Restricts the way current iterator can recurse in, making sure
-			// every path leads up-to the container specified.
+			// every path leads up-to the container specified (or none).
 			//
-			void restrict_path( container_type* dst, bool forward )
+			riterator_base& restrict_path()
+			{ 
+				paths_allowed = {};
+				is_path_restricted = true;
+				return *this;
+			}
+			riterator_base& restrict_path( container_type* dst, bool forward )
 			{
-				// Trace the path.
-				//
-				std::set<container_type*> trace = path_to( container, dst, forward );
-				
-				// If path is already restricted:
+				// Path should not be already restricted.
 				//
 				if ( is_path_restricted )
-				{
-					// Any allowed path should be allowed in both now. 
-					//
-					std::set<container_type*> path_intersection;
-					std::set_intersection( trace.begin(), trace.end(), 
-										   paths_allowed.begin(), paths_allowed.end(), 
-										   std::inserter( path_intersection, path_intersection.begin() ) );
-					paths_allowed = path_intersection;
-				}
-				else
-				{
-					// Set as the current allowed paths list.
-					//
-					paths_allowed = trace;
-				}
+					unreachable();
+				
+				// Set as the current allowed paths list.
+				//
+				paths_allowed = forward
+					? &container->owner->get_path( container, dst )
+					: &container->owner->get_path_bwd( container, dst );
 
 				// Declare the current iterator path restricted.
 				//
 				is_path_restricted = true;
+				return *this;
+			}
+
+			// Clears any path restriction.
+			//
+			riterator_base& clear_restrictions() 
+			{
+				is_path_restricted = false;
+				paths_allowed = nullptr;
+				return *this;
 			}
 
 			// Returns the possible paths the iterator can follow if it reaches it's end.
@@ -159,11 +132,12 @@ namespace vtil
 				// Generate a list of possible iterators to continue from:
 				//
 				std::vector<riterator_base> output;
+				output.reserve( forward ? container->next.size() : container->prev.size() );
 				for ( container_type* dst : ( forward ? container->next : container->prev ) )
 				{
 					// Skip if path is restricted and this path is not allowed.
 					//
-					if ( is_path_restricted && paths_allowed.find( dst ) == paths_allowed.end() )
+					if ( is_path_restricted && ( !paths_allowed || paths_allowed->find( dst ) == paths_allowed->end() ) )
 						continue;
 
 					// Otherwise create the new iterator, inheriting the path restrictions 
@@ -172,10 +146,24 @@ namespace vtil
 					riterator_base new_it = { dst,  forward ? dst->begin() : dst->end() };
 					new_it.paths_allowed = paths_allowed;
 					new_it.is_path_restricted = is_path_restricted;
-					output.push_back( new_it );
+					output.emplace_back( std::move( new_it ) );
 				}
 				return output;
 			}
+
+			// Conversion to string.
+			//
+			std::string to_string() const
+			{
+				if ( !is_valid() ) return "invalid";
+				if ( is_end() )    return format::str( "end@block#%llx", container->entry_vip );
+				if ( is_begin() )  return format::str( "begin@block%llx",   container->entry_vip );
+				else               return format::str( "#%04d@block%llx",   std::distance( container->begin(), *this ), container->entry_vip );
+			}
+
+			// Make hashable.
+			//
+			hash_t hash() const { return make_hash( container, is_end() ? nullptr : iterator_type::operator->() ) ; }
 		};
 		using iterator =       riterator_base<basic_block, std::list<instruction>::iterator>;
 		using const_iterator = riterator_base<const basic_block, std::list<instruction>::const_iterator>;
@@ -221,9 +209,13 @@ namespace vtil
 		// Labels are a simple way to assign the same VIP for multiple 
 		// instructions that will be pushed after the call.
 		//
-		std::vector<std::pair<size_t, vip_t>> label_stack = {};
+		std::vector<vip_t> label_stack = {};
 		basic_block* label_begin( vip_t vip );
 		basic_block* label_end();
+
+		// Multivariate runtime context.
+		//
+		mutable multivariate context = {};
 
 		// Wrap the std::list fundamentals.
 		//
@@ -259,12 +251,15 @@ namespace vtil
 		// Constructor does not exist. Should be created either using
 		// ::begin(...) or ->fork(...).
 		//
-		static basic_block* begin( vip_t entry_vip );
+		static basic_block* begin( vip_t entry_vip, architecture_identifier arch_id = architecture_amd64 );
 		basic_block* fork( vip_t entry_vip );
 
 		// Helpers for the allocation of unique temporary registers.
 		//
-		register_desc tmp( bitcnt_t size );
+		register_desc tmp( bitcnt_t size )
+		{
+			return { register_local, last_temporary_index++, size };
+		}
 		template<typename... params>
 		auto tmp( bitcnt_t size_0, params... size_n )
 		{
@@ -299,6 +294,7 @@ namespace vtil
 		WRAP_LAZY( movsx );
 		WRAP_LAZY( str );
 		WRAP_LAZY( ldd );
+		WRAP_LAZY( ifs );
 		WRAP_LAZY( neg );
 		WRAP_LAZY( add );
 		WRAP_LAZY( sub );
@@ -311,6 +307,8 @@ namespace vtil
 		WRAP_LAZY( rem );
 		WRAP_LAZY( irem );
 		WRAP_LAZY( popcnt );
+		WRAP_LAZY( bsf );
+		WRAP_LAZY( bsr );
 		WRAP_LAZY( bnot );
 		WRAP_LAZY( bshr );
 		WRAP_LAZY( bshl );
@@ -380,7 +378,7 @@ namespace vtil
 				//
 				int64_t padding_size = stack_alignment - misalignment;
 				shift_sp( -padding_size );
-				str( REG_SP, sp_offset, operand( 0, padding_size * 8 ) );
+				str( REG_SP, sp_offset, operand( 0, math::narrow_cast<bitcnt_t>( padding_size * 8 ) ) );
 			}
 
 			// Shift and write the operand.

@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -35,21 +35,25 @@ namespace vtil
 	//
 	struct vm_interface
 	{
+		// Returns the full register size for the given descriptor.
+		//
+		virtual bitcnt_t size_register( const register_desc& desc ) { return 64; }
+
 		// Reads from the register.
 		//
-		virtual symbolic::expression read_register( const register_desc& desc ) { unreachable(); return {}; }
+		virtual symbolic::expression::reference read_register( const register_desc& desc ) { unreachable(); return {}; }
 		
 		// Reads the given number of bytes from the memory.
 		//
-		virtual symbolic::expression read_memory( const symbolic::expression& pointer, size_t byte_count ) { unreachable(); return {}; }
+		virtual symbolic::expression::reference read_memory( const symbolic::expression::reference& pointer, size_t byte_count ) { unreachable(); return {}; }
 
 		// Writes to the register.
 		//
-		virtual void write_register( const register_desc& desc, symbolic::expression value ) { unreachable(); }
+		virtual void write_register( const register_desc& desc,symbolic::expression::reference value ) { unreachable(); }
 		
 		// Writes the given expression to the memory.
 		//
-		virtual void write_memory( const symbolic::expression& pointer, symbolic::expression value ) { unreachable(); }
+		virtual void write_memory( const symbolic::expression::reference& pointer, symbolic::expression::reference value ) { unreachable(); }
 
 		// Runs the given instruction, returns whether it was successful.
 		//

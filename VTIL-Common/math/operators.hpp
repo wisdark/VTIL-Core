@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -84,6 +84,8 @@ namespace vtil::math
         ucast,          // uintRHS_t(LHS)
         cast,           // intRHS_t(LHS)
         popcnt,         // POPCNT(RHS)
+        bitscan_fwd,    // BitScanForward(RHS)
+        bitscan_rev,    // BitScanReverse(RHS)
         bit_test,       // [LHS>>RHS]&1
         mask,           // RHS.mask()
         bit_count,      // RHS.bitcount()
@@ -139,6 +141,11 @@ namespace vtil::math
         //
         const char* function_name;
 
+        // Coefficient of the expression complexity, will be multiplied with an additional x2 
+        // in case bitwise/aritmethic mismatch is hit within child expressions.
+        //
+        double complexity_coeff;
+
         // Creates a string representation based on the operands passed.
         //
         std::string to_string( const std::string& lhs, const std::string& rhs ) const
@@ -169,52 +176,54 @@ namespace vtil::math
         // Skipping ::invalid.
         {},
 
-        /*  [Bitwise] [Signed]  [#Op] [Commutative]   [Symbol]    [Name]        */
-        {   +1,       false,    1,    false,          "~",        "not"         },
-        {   +1,       false,    2,    true,           "&",        "and"         },
-        {   +1,       false,    2,    true,           "|",        "or"          },
-        {   +1,       false,    2,    true,           "^",        "xor"         },
-        {   +1,       false,    2,    false,          ">>",       "shr"         },
-        {   +1,       false,    2,    false,          "<<",       "shl"         },
-        {   +1,       false,    2,    false,          ">]",       "rotr"        },
-        {   +1,       false,    2,    false,          "[<",       "rotl"        },
-        {   -1,       true,     1,    false,          "-",        "neg"         },
-        {   -1,       true,     2,    true,           "+",        "add"         },
-        {   -1,       true,     2,    false,          "-",        "sub"         },
-        {   -1,       true,     2,    true,           "h*",       "mulhi"       },
-        {   -1,       true,     2,    true,           "*",        "mul"         },
-        {   -1,       true,     2,    false,          "/",        "div"         },
-        {   -1,       true,     2,    false,          "%",        "rem"         },
-        {   -1,       false,    2,    true,           "uh*",      "umulhi"      },
-        {   -1,       false,    2,    true,           "u*",       "umul"        },
-        {   -1,       false,    2,    false,          "u/",       "udiv"        },
-        {   -1,       false,    2,    false,          "u%",       "urem"        },
-        {    0,       false,    2,    false,          nullptr,    "__ucast"     },
-        {   -1,       true,     2,    false,          nullptr,    "__cast"      },
-        {   +1,       false,    1,    false,          nullptr,    "__popcnt"    },
-        {   +1,       false,    2,    false,          nullptr,    "__bt"        },
-        {   +1,       false,    1,    false,          nullptr,    "__mask"      },
-        {    0,       false,    1,    false,          nullptr,    "__bcnt"      },
-        {    0,       false,    2,    false,          "?",        "if"          },
-        {    0,       false,    2,    false,          nullptr,    "max"         },
-        {    0,       false,    2,    false,          nullptr,    "min"         },
-        {    0,       true,     2,    false,          nullptr,    "umax"        },
-        {    0,       true,     2,    false,          nullptr,    "umin"        },
-        {   -1,       true,     2,    false,          ">",        "greater"     },
-        {   -1,       true,     2,    false,          ">=",       "greater_eq"  },
-        {    0,       false,    2,    false,          "==",       "equal"       },
-        {    0,       false,    2,    false,          "!=",       "not_equal"   },
-        {   -1,       true,     2,    false,          "<=",       "less_eq"     },
-        {   -1,       true,     2,    false,          "<",        "less"        },
-        {   +1,       false,    2,    false,          "u>",       "ugreater"    },
-        {   +1,       false,    2,    false,          "u>=",      "ugreater_eq" },
-        {    0,       false,    2,    false,          "u==",      "uequal"      },
-        {    0,       false,    2,    false,          "u!=",      "unot_equal"  },
-        {   +1,       false,    2,    false,          "u<=",      "uless_eq"    },
-        {   +1,       false,    2,    false,          "u<",       "uless"       },
+        /*  [Bitwise] [Signed]  [#Op] [Commutative]   [Symbol]    [Name]         [Cost] */
+        {   +1,       false,    1,    false,          "~",        "not",         1      },
+        {   +1,       false,    2,    true,           "&",        "and",         1      },
+        {   +1,       false,    2,    true,           "|",        "or",          1      },
+        {   +1,       false,    2,    true,           "^",        "xor",         1      },
+        {   +1,       false,    2,    false,          ">>",       "shr",         1.5    },
+        {   +1,       false,    2,    false,          "<<",       "shl",         1.5    },
+        {   +1,       false,    2,    false,          ">]",       "rotr",        0.5    },
+        {   +1,       false,    2,    false,          "[<",       "rotl",        0.5    },
+        {   -1,       true,     1,    false,          "-",        "neg",         1      },
+        {   -1,       true,     2,    true,           "+",        "add",         1      },
+        {   -1,       true,     2,    false,          "-",        "sub",         1      },
+        {   -1,       true,     2,    true,           "h*",       "mulhi",       1.3    },
+        {   -1,       true,     2,    true,           "*",        "mul",         1.3    },
+        {   -1,       true,     2,    false,          "/",        "div",         1.3    },
+        {   -1,       true,     2,    false,          "%",        "rem",         1.3    },
+        {   -1,       false,    2,    true,           "uh*",      "umulhi",      1.3    },
+        {   -1,       false,    2,    true,           "u*",       "umul",        1.3    },
+        {   -1,       false,    2,    false,          "u/",       "udiv",        1.3    },
+        {   -1,       false,    2,    false,          "u%",       "urem",        1.3    },
+        {    0,       false,    2,    false,          nullptr,    "__ucast",     1      },
+        {   -1,       true,     2,    false,          nullptr,    "__cast",      1      },
+        {   +1,       false,    1,    false,          nullptr,    "__popcnt",    1      },
+        {   +1,       false,    1,    false,          nullptr,    "__bsf",       1      },
+        {   +1,       false,    1,    false,          nullptr,    "__bsr",       1      },
+        {   +1,       false,    2,    false,          nullptr,    "__bt",        1      },
+        {   +1,       false,    1,    false,          nullptr,    "__mask",      1      },
+        {    0,       false,    1,    false,          nullptr,    "__bcnt",      1      },
+        {    0,       false,    2,    false,          "?",        "if",          1      },
+        {    0,       false,    2,    true,           nullptr,    "max",         1      },
+        {    0,       false,    2,    true,           nullptr,    "min",         1      },
+        {    0,       true,     2,    true,           nullptr,    "umax",        1      },
+        {    0,       true,     2,    true,           nullptr,    "umin",        1      },
+        {   -1,       true,     2,    false,          ">",        "greater",     1      },
+        {   -1,       true,     2,    false,          ">=",       "greater_eq",  1.2    },
+        {    0,       false,    2,    true,           "==",       "equal",       1      },
+        {    0,       false,    2,    true,           "!=",       "not_equal",   1      },
+        {   -1,       true,     2,    false,          "<=",       "less_eq",     1.2    },
+        {   -1,       true,     2,    false,          "<",        "less",        1      },
+        {   +1,       false,    2,    false,          "u>",       "ugreater",    1      },
+        {   +1,       false,    2,    false,          "u>=",      "ugreater_eq", 1.2    },
+        {    0,       false,    2,    true,           "u==",      "uequal",      1      },
+        {    0,       false,    2,    true,           "u!=",      "unot_equal",  1      },
+        {   +1,       false,    2,    false,          "u<=",      "uless_eq",    1.2    },
+        {   +1,       false,    2,    false,          "u<",       "uless",       1      },
     };
     static_assert( std::size( descriptors ) == size_t( operator_id::max ), "Operator descriptor table is invalid." );
-    static const operator_desc* descriptor_of( operator_id id ) 
+    static constexpr const operator_desc* descriptor_of( operator_id id ) 
     { 
         return ( operator_id::invalid < id && id < operator_id::max ) ? &descriptors[ ( size_t ) id ] : nullptr; 
     }
@@ -222,18 +231,6 @@ namespace vtil::math
     // Operators that return bit-indices, always use the following size.
     //
     static constexpr bitcnt_t bit_index_size = 8;
-
-    // Before operators return their result, the result size is always
-    // rounded up to either 1, 8, 16, 32 or 64 (where available).
-    //
-    static constexpr bitcnt_t round_bit_count( bitcnt_t n )
-    {
-        if ( n > 32 )      return 64;
-        else if ( n > 16 ) return 32;
-        else if ( n > 8 )  return 16;
-        else if ( n > 1 )  return 8;
-        else               return 1;
-    }
 
     // Calculates the size of the result after after the application of the operator [id] on the operands.
     //

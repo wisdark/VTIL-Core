@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -30,6 +30,7 @@
 #include <math.h>
 #include <optional>
 #include <type_traits>
+#include <numeric>
 #include "../util/reducable.hpp"
 #include "../io/asserts.hpp"
 
@@ -42,27 +43,103 @@ using bitcnt_t = int;
 
 namespace vtil::math
 {
-    // Sizeof equivalent in bits.
+    // Narrows the given type in a safe manner.
     //
-    template<typename T>
-    static constexpr bitcnt_t bitcnt = sizeof( T ) * 8;
+    template<typename T, typename T2>
+    static T narrow_cast( T2 o )
+    {
+        if constexpr ( std::is_signed_v<T2> ^ std::is_signed_v<T> )
+            dassert( 0 <= o && o <= std::numeric_limits<T>::max() );
+        else
+            dassert( std::numeric_limits<T>::min() <= o && o <= std::numeric_limits<T>::max() );
+        return ( T ) o;
+    }
 
     // Extracts the sign bit from the given value.
     //
     template<typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-    static constexpr bool sgn( T type ) { return bool( type >> ( bitcnt<T> - 1 ) ); }
+    static constexpr bool sgn( T type ) { return bool( type >> ( ( sizeof( T ) * 8 ) - 1 ) ); }
 
-    // Implement platform-indepdenent popcnt.
+    // Implement platform-indepdenent popcnt/msb/lsb.
     //
-    static constexpr bitcnt_t popcnt( uint64_t x )
+    static bitcnt_t popcnt( uint64_t x )
     {
-        // https://www.chessprogramming.org/Population_Count#The_PopCount_routine
+#ifdef _MSC_VER
+        return ( bitcnt_t ) __popcnt64( x );
+#else
+        bitcnt_t count = 0;
+        for ( bitcnt_t i = 0; i < 64; i++, x >>= 1 )
+            count += ( bitcnt_t ) ( x & 1 );
+        return count;
+#endif
+    }
+    static bitcnt_t msb( uint64_t x )
+    {
+#ifdef _MSC_VER
+        unsigned long idx;
+        return _BitScanReverse64( &idx, x ) ? ( bitcnt_t ) idx + 1 : 0;
+#else
+        // Return index + 1 on success:
         //
-        x = x - ( x >> 1 ) & 0x5555555555555555;
-        x = ( x & 0x3333333333333333 ) + ( ( x >> 2 ) & 0x3333333333333333 );
-        x = ( x + ( x >> 4 ) ) & 0x0f0f0f0f0f0f0f0f;
-        x = ( x * 0x0101010101010101 ) >> 56;
-        return bitcnt_t( x );
+        for ( bitcnt_t i = 63; i >= 0; i-- )
+            if ( x & ( 1ull << i ) )
+                return i + 1;
+        // Zero otherwise.
+        //
+        return 0;
+#endif
+    }
+    static bitcnt_t lsb( uint64_t x )
+    {
+#ifdef _MSC_VER
+        unsigned long idx;
+        return _BitScanForward64( &idx, x ) ? ( bitcnt_t ) idx + 1 : 0;
+#else
+        // Return index + 1 on success:
+        //
+        for ( bitcnt_t i = 0; i <= 63; i++ )
+            if ( x & ( 1ull << i ) )
+                return i + 1;
+        // Zero otherwise.
+        //
+        return 0;
+#endif
+    }
+
+    // Used to find a bit with a specific value in a linear memory region.
+    //
+    static constexpr size_t bit_npos = ( size_t ) -1;
+    
+    template<typename T>
+    static size_t find_bit( const T* begin, const T* end, bool value )
+    {
+        static constexpr size_t bit_size = sizeof( T ) * 8;
+        using uint_t = std::make_unsigned_t<T>;
+        using int_t =  std::make_signed_t<T>;
+
+        // Generate the xor mask, if we're looking for 1, -!1 will evaluate to 0,
+        // otherwise -!0 will evaluate to 0xFF.. in order to flip all bits.
+        //
+        uint_t xor_mask = ( uint_t ) ( -( ( int_t ) !value ) );
+
+        // Loop each block:
+        //
+        size_t n = 0;
+        for ( auto it = begin; it != end; it++, n += bit_size )
+        {
+            // If we could find the bit in the block:
+            //
+            if ( bitcnt_t i = math::lsb( *it ^ xor_mask ) )
+            {
+                // Return after adjusting the index.
+                //
+                return n + i - 1;
+            }
+        }
+
+        // Return invalid index.
+        //
+        return bit_npos;
     }
 
     // Generate a mask for the given variable size and offset.
@@ -208,42 +285,42 @@ namespace vtil::math
     public:
         // Default constructor, will result in invalid bit-vector.
         //
-        bit_vector() = default;
+        constexpr bit_vector() = default;
 
         // Constructs a bit-vector where all bits are set according to the state.
         // - Declared explicit to avoid construction from integers.
         //
-        explicit bit_vector( bitcnt_t bit_count ) :                                      
+        constexpr explicit bit_vector( bitcnt_t bit_count ) :                                      
             bit_count( bit_count ),     unknown_bits( fill( bit_count ) ),                  known_bits( 0 ) {}
                                                                                                                                           
         // Constructs a bit-vector where all bits are known.												                              
         //																									                              
-        bit_vector( uint64_t value, bitcnt_t bit_count ) :                               
+        constexpr bit_vector( uint64_t value, bitcnt_t bit_count ) :                               
             bit_count( bit_count ),     unknown_bits( 0 ),                                  known_bits( value & fill( bit_count ) ) {}
                                                                                                                                             
         // Constructs a bit-vector where bits are partially known.											                                
         //																									                                
-        bit_vector( uint64_t known_bits, uint64_t unknown_bits, bitcnt_t bit_count ) :   
+        constexpr bit_vector( uint64_t known_bits, uint64_t unknown_bits, bitcnt_t bit_count ) :   
             bit_count( bit_count ),     unknown_bits( unknown_bits & fill( bit_count ) ),   known_bits( known_bits & ( ~unknown_bits ) & fill( bit_count ) ) {}
 
         // Some helpers to access the internal state.
         //
-        uint64_t value_mask() const { return fill( bit_count ); }
-        uint64_t unknown_mask() const { return unknown_bits; }
-        uint64_t known_mask() const { return fill( bit_count ) & ~unknown_bits; }
-        uint64_t known_one() const { return known_bits; }
-        uint64_t known_zero() const { return ~( unknown_bits | known_bits ); }
-        bool all_zero() const { return unknown_bits == 0 && !known_bits; }
-        bool all_one() const { return unknown_bits == 0 && ( known_bits == fill( bit_count ) ); }
-        bool is_valid() const { return bit_count != 0; }
-        bool is_known() const { return bit_count && unknown_bits == 0; }
-        bool is_unknown() const { return !bit_count || unknown_bits != 0; }
-        bitcnt_t size() const { return bit_count; }
+        constexpr uint64_t value_mask() const { return fill( bit_count ); }
+        constexpr uint64_t unknown_mask() const { return unknown_bits; }
+        constexpr uint64_t known_mask() const { return fill( bit_count ) & ~unknown_bits; }
+        constexpr uint64_t known_one() const { return known_bits; }
+        constexpr uint64_t known_zero() const { return ~( unknown_bits | known_bits ); }
+        constexpr bool all_zero() const { return unknown_bits == 0 && !known_bits; }
+        constexpr bool all_one() const { return unknown_bits == 0 && ( known_bits == fill( bit_count ) ); }
+        constexpr bool is_valid() const { return bit_count != 0; }
+        constexpr bool is_known() const { return bit_count && unknown_bits == 0; }
+        constexpr bool is_unknown() const { return !bit_count || unknown_bits != 0; }
+        constexpr bitcnt_t size() const { return bit_count; }
 
         // Gets the value represented, and nullopt if vector has unknown bits.
         //
         template<typename type>
-        std::optional<type> get() const
+        constexpr std::optional<type> get() const
         {
             if ( is_known() )
             {
@@ -255,7 +332,7 @@ namespace vtil::math
             return std::nullopt;
         }
         template<bool as_signed = false, typename type = std::conditional_t<as_signed, int64_t, uint64_t>>
-        std::optional<type> get() const { return get<type>(); }
+        constexpr std::optional<type> get() const { return get<type>(); }
 
         // Extends or shrinks the the vector.
         //
@@ -282,12 +359,12 @@ namespace vtil::math
 
         // Gets the state of the bit at the index given.
         //
-        bit_state at( bitcnt_t n ) const
+        constexpr bit_state at( bitcnt_t n ) const
         {
             if ( unknown_bits & ( 1ull << n ) ) return bit_state::unknown;
             return bit_state( ( ( ( known_bits >> n ) & 1 ) << 1 ) - 1 );
         }
-        bit_state operator[]( bitcnt_t n ) const { return at( n ); }
+        constexpr bit_state operator[]( bitcnt_t n ) const { return at( n ); }
 
         // Conversion to human-readable format.
         //

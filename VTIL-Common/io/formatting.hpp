@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -27,8 +27,13 @@
 //
 #pragma once
 #include <string>
+#include <cstring>
+#include <cstdio>
 #include <type_traits>
+#include <chrono>
 #include "../util/concept.hpp"
+#include "../util/lt_typeid.hpp"
+#include "../util/dynamic_size.hpp"
 
 // [Configuration]
 // Determine the way we format the instructions.
@@ -75,7 +80,7 @@ namespace vtil::format
 			static auto f( T v ) -> decltype( std::to_string( v ) );
 		};
 
-		// Check if type is convertable to string using T.to_string()
+		// Check if type is convertable to string using T.to_string().
 		//
 		template<typename... D>
 		struct has_to_string : concept_base<has_to_string, D...>
@@ -83,6 +88,13 @@ namespace vtil::format
 			template<typename T>
 			static auto f( T v ) -> decltype( v.to_string() );
 		};
+
+		// Check if type is a chrono duration.
+		//
+		template <typename types>
+		static constexpr bool is_duration_v = false;
+		template <typename... types>
+		static constexpr bool is_duration_v<std::chrono::duration<types...>> = true;
 
 		// Returns a temporary but valid const (w)char* for the given std::(w)string.
 		//
@@ -97,6 +109,29 @@ namespace vtil::format
 			index = ++index % std::size( ring_buffer );
 			return ref.data();
 		}
+
+		// Fixes the type name to be more friendly.
+		//
+		static std::string fix_type_name( std::string&& in )
+		{
+			static constexpr const char* remove_list[] = {
+				"struct ",
+				"class ",
+				"enum ",
+				"vtil::"
+			};
+			for ( const char* str : remove_list )
+			{
+				if ( in.starts_with( str ) )
+					return fix_type_name( in.substr( strlen( str ) ) );
+				for ( size_t i = 0; i < in.size(); i++ )
+				{
+					if ( in[ i ] == '<' && in.substr( i + 1 ).starts_with( str ) )
+						in = in.substr( 0, i + 1 ) + in.substr( i + 1 + strlen( str ) );
+				}
+			}
+			return in;
+		}
 	};
 
 	// Simple boolean to check if object supports string conversion.
@@ -104,11 +139,38 @@ namespace vtil::format
 	template<typename T>
 	static constexpr bool has_string_conversion_v = impl::std_to_string<T>::apply() || impl::has_to_string<T>::apply();
 
-	// Converts the given type to a string.
+	// Returns the type name of the object passed, dynamic type name will
+	// redirect to static type name if RTTI is not supported.
+	//
+	template<typename T>
+	static std::string static_type_name()
+	{
+#if HAS_RTTI
+		static std::string res = impl::fix_type_name( typeid( T ).name() );
+		return res;
+#else
+		char buf[ 32 ];
+		sprintf_s( buf, "Type%llx", lt_typeid<T>::value );
+		return buf;
+#endif
+	}
+	template<typename T>
+	static std::string dynamic_type_name( const T& o )
+	{
+#if HAS_RTTI
+		return impl::fix_type_name( typeid( o ).name() );
+#else
+		return static_type_name<T>();
+#endif
+	}
+
+	// Converts any given object to a string.
 	//
 	template<typename T>
 	static std::string as_string( T&& x )
 	{
+		using base_type = std::decay_t<T>;
+
 		if constexpr ( impl::std_to_string<T>::apply() )
 		{
 			return std::to_string( x );
@@ -117,17 +179,50 @@ namespace vtil::format
 		{
 			return x.to_string();
 		}
+		else if constexpr ( std::is_same_v<base_type, std::string> || 
+							std::is_same_v<base_type, const char*> )
+		{
+			return x;
+		}
+		else if constexpr ( std::is_same_v<base_type, std::wstring> )
+		{
+			return std::string( x.begin(), x.end() );
+		}
+		else if constexpr ( std::is_same_v<base_type, const wchar_t*> )
+		{
+			return as_string( std::wstring{ x } );
+		}
+		else if constexpr ( impl::is_duration_v<base_type> )
+		{
+			static constexpr auto flt2str = [ ] ( float f ) -> std::string
+			{
+				char buffer[ 32 ];
+				snprintf( buffer, 32, "%.2f", f );
+				return buffer;
+			};
+
+			static constexpr std::tuple<base_type, const char*, bool> durations[] = 
+			{
+				{ std::chrono::duration_cast<base_type>( std::chrono::hours{ 1 } ),        "hrs",  false },
+				{ std::chrono::duration_cast<base_type>( std::chrono::minutes{ 1 } ),      "min",  false },
+				{ std::chrono::duration_cast<base_type>( std::chrono::seconds{ 1 } ),      "sec",  false },
+				{ std::chrono::duration_cast<base_type>( std::chrono::milliseconds{ 1 } ), "ms",   false },
+				{ std::chrono::duration_cast<base_type>( std::chrono::nanoseconds{ 1 } ),  "ns",   true  },
+			};
+
+			for ( auto& [dur, name, last] : durations )
+				if ( last || x > dur )
+					return flt2str( x.count() / float( dur.count() ) ) + name;
+
+			// Should not be reached, but unreachable() relies on formatting so abort instead.
+			//
+			abort();
+		}
 		else
 		{
-			static std::string type_name =
-#if HAS_RTTI
-				typeid( T ).name();
-#else
-				"object";
-#endif
-			char pointer_string[ 32 ];
-			sprintf_s( pointer_string, "%p", &x );
-			return "[" + type_name + "@" + std::string( pointer_string ) + "]";
+			char buffer[ 32 ];
+			snprintf( buffer, 32, "%p", &x );
+			return "[" + dynamic_type_name( x ) + "@" + std::string( buffer ) + "]";
 		}
 	}
 
@@ -143,7 +238,8 @@ namespace vtil::format
 
 		// If fundamental type, return as is.
 		//
-		if constexpr ( std::is_fundamental_v<base_type> || std::is_enum_v<base_type> || std::is_pointer_v<base_type> )
+		if constexpr ( std::is_fundamental_v<base_type> || std::is_enum_v<base_type> || 
+					   std::is_pointer_v<base_type> || std::is_array_v<base_type> )
 		{
 			return std::forward<T>( x );
 		}
@@ -160,6 +256,19 @@ namespace vtil::format
 			else
 				return impl::buffer_string( std::move( x ) );
 		}
+		// If container:
+		//
+		else if constexpr ( is_random_access_v<T> && !impl::has_to_string<T>::apply() )
+		{
+			size_t n = dynamic_size( x );
+			std::string result = "{";
+			for ( size_t i = 0; i < n; i++ )
+			{
+				result += as_string( deref_n( x, i ) );
+				if ( ( i + 1 ) != n ) result += ", ";
+			}
+			return impl::buffer_string( result + "}" );
+		}
 		// If none matched, forcefully convert into [type @ pointer].
 		//
 		else
@@ -174,7 +283,7 @@ namespace vtil::format
 	static std::string str( const char* fmt, params&&... ps )
 	{
 		std::string buffer;
-		buffer.resize( snprintf( nullptr, 0, fmt, fix_parameter<params>( std::forward<params>( ps ) )... ) );
+		buffer.resize( snprintf( nullptr, 0, fmt, fix_parameter( ps )... ) );
 		snprintf( buffer.data(), buffer.size() + 1, fmt, fix_parameter<params>( std::forward<params>( ps ) )... );
 		return buffer;
 	}
@@ -184,20 +293,23 @@ namespace vtil::format
 	template<typename T, std::enable_if_t<std::is_integral_v<std::remove_cvref_t<T>>, int> = 0>
 	static std::string hex( T&& value )
 	{
-		if ( !std::is_signed_v<std::remove_cvref_t<T>> || value >= 0 )
+		if constexpr ( !std::is_signed_v<std::remove_cvref_t<T>> )
+		{
 			return str( "0x%llx", value );
+		}
 		else
-			return str( "-0x%llx", -value );
+		{
+			if ( value >= 0 ) return str( "0x%llx", value );
+			else              return str( "-0x%llx", -value );
+		}
 	}
 
 	// Formats the integer into a signed hexadecimal with explicit + if positive.
 	//
 	static std::string offset( int64_t value )
 	{
-		if ( value >= 0 )
-			return str( "+ 0x%llx", value );
-		else
-			return str( "- 0x%llx", -value );
+		if ( value >= 0 ) return str( "+ 0x%llx", value );
+		else              return str( "- 0x%llx", -value );
 	}
 };
 #undef HAS_RTTI

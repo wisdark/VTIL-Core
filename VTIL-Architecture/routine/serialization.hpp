@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -28,11 +28,13 @@
 #pragma once
 #include <ostream>
 #include <istream>
+#include <fstream>
 #include <vector>
 #include <string>
 #include "routine.hpp"
 #include "basic_block.hpp"
 #include "instruction.hpp"
+#include "call_convention.hpp"
 
 #pragma warning(disable:4267)
 namespace vtil
@@ -133,7 +135,7 @@ namespace vtil
 
 		// If container stores data linearly and trivial data is stored:
 		//
-		if constexpr ( impl::is_linear_container_v<T>&& std::is_trivial<value_type>::value )
+		if constexpr ( impl::is_linear_container_v<T> && std::is_trivial<value_type>::value )
 		{
 			// Resize the container to expected size and read all entries at once.
 			//
@@ -187,6 +189,11 @@ namespace vtil
 		}
 	}
 
+	// Serialization of VTIL calling conventions.
+	//
+	void serialize( std::ostream& out, const call_convention& in );
+	void deserialize( std::istream& in, call_convention& out );
+
 	// Serialization of VTIL blocks.
 	//
 	void serialize( std::ostream& out, const basic_block* in );
@@ -195,7 +202,7 @@ namespace vtil
 	// Serialization of VTIL routines.
 	//
 	void serialize( std::ostream& out, const routine* rtn );
-	routine* deserialize( std::istream& in, routine*& rtn );
+	void deserialize( std::istream& in, routine*& rtn );
 
 	// Serialization of VTIL instructions.
 	//
@@ -206,5 +213,20 @@ namespace vtil
 	//
 	void serialize( std::ostream& out, const operand& in );
 	void deserialize( std::istream& in, operand& out );
+
+	// Simple wrappers for serialize / deserialize routine.
+	//
+	static void save_routine( const routine* rtn, const std::string& path )
+	{
+		std::ofstream fs( path, std::ios::binary );
+		serialize( fs, rtn );
+	}
+	static routine* load_routine( const std::string& path )
+	{
+		routine* rtn;
+		std::ifstream fs( path, std::ios::binary );
+		deserialize( fs, rtn );
+		return rtn;
+	}
 };
 #pragma warning(default:4267)

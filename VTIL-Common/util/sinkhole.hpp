@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -33,6 +33,7 @@
 #include "../math/operable.hpp"
 #include "../io/asserts.hpp"
 #include "optional_reference.hpp"
+#include "deferred_value.hpp"
 
 namespace vtil
 {
@@ -107,6 +108,10 @@ namespace vtil
 		const_iterator end() const { return value_map.end(); }
 		iterator erase( const_iterator x ) { return value_map.erase( std::move( x ) ); }
 
+		// Reset entire state.
+		//
+		void reset() { value_map.clear(); }
+
 		// Given a cache entry's iterator, it strips N bits at the given offset
 		// from it and creates another cache entry.
 		//
@@ -157,7 +162,7 @@ namespace vtil
 
 			// Declare temporary result.
 			//
-			value_unit result = default_constructor( ptr, size );
+			deferred_value result( default_constructor, ptr, size );
 
 			// Declare the list of iterators we will erase off the map upon
 			// reorganizing and a hint to see if the key already exists.
@@ -167,12 +172,25 @@ namespace vtil
 
 			// Iterace each entry in the range:
 			//
-			auto it_min = value_map.lower_bound( offset_fn{}( weaken_pointer{}( ptr ), 64 / 8 ) );
+			pointer_unit min_ptr = offset_fn{}( weaken_pointer{}( ptr ), -64 / 8 );
+			auto it_min = value_map.lower_bound( min_ptr );
 			if ( it_min == value_map.end() ) return std::nullopt;
-			auto it_max = value_map.upper_bound( offset_fn{}( ptr, size / 8 ) );
+
+			pointer_unit max_ptr = offset_fn{}( ptr, size / 8 );
+			auto it_max = value_map.upper_bound( max_ptr );
 			if ( it_min == it_max ) return std::nullopt;
+
 			for ( auto it = it_min; it != it_max; it++ )
 			{
+				// If we've reached the end, rotate back to the beginning,
+				// this handles overflows in pointers.
+				//
+				/*if ( it == value_map.end() )
+				{
+					it = value_map.begin();
+					it_max = value_map.lower_bound( min_ptr );
+				}*/
+				
 				// Calculate displacement, if unknown return unknown.
 				// = [RL - WL]
 				//
@@ -194,7 +212,7 @@ namespace vtil
 				//
 				const bitcnt_t rl = 0;
 				const bitcnt_t rh = size;
-				const bitcnt_t wl = wl_b.value() * 8;
+				const bitcnt_t wl = math::narrow_cast<bitcnt_t>( wl_b.value() * 8 );
 				const bitcnt_t wh = wl + it->second.size();
 
 				// If write is below or at our pointer:
@@ -230,8 +248,8 @@ namespace vtil
 					it = acquire( it, rl - wl, wh - rl );
 					if constexpr ( !discard_value )
 					{
-						result = result & ~math::fill( wh - rl );
-						result = result | it->second;
+						result = *result & ~math::fill( wh - rl );
+						result = *result | it->second;
 					}
 
 					// If displacement is zero, reference it as key hint, otherwise 
@@ -249,7 +267,7 @@ namespace vtil
 				{
 					// Calculate the size of the overlapping region.
 					//
-					int64_t overlap_cnt = std::min( rh, wh ) - wl;
+					bitcnt_t overlap_cnt = std::min( rh, wh ) - wl;
 
 					// If write misses our range, skip.
 					// RL  RH
@@ -266,8 +284,8 @@ namespace vtil
 					{
 						value_unit mid_val = it->second;
 						mid_val.resize( size );
-						result = result & ~math::fill( overlap_cnt, wl );
-						result = result | ( std::move( mid_val ) << wl );
+						result = *result & ~math::fill( overlap_cnt, wl );
+						result = *result | ( std::move( mid_val ) << wl );
 					}
 					merge_list.emplace_back( std::move( it ) );
 				}
@@ -275,7 +293,7 @@ namespace vtil
 
 			// Resize result.
 			//
-			result.resize( size );
+			result->resize( size );
 
 			// Create the value entry if not re-used:
 			//
@@ -289,7 +307,7 @@ namespace vtil
 
 			// Write the value and erase all iterators in the merge list.
 			//
-			( *key_entry )->second = std::move( result );
+			( *key_entry )->second = std::move( *result );
 			for ( auto it : merge_list )
 				if( it != key_entry )
 					value_map.erase( it );

@@ -8,9 +8,6 @@
       <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
-    <Filter Include="amd64">
-      <UniqueIdentifier>{cb6f5bfd-fdca-47fe-bbb7-e91d8e5ba642}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Math">
       <UniqueIdentifier>{e5d9bf65-c2c0-4dcf-aa87-65a7059e4e90}</UniqueIdentifier>
     </Filter>
@@ -20,11 +17,23 @@
     <Filter Include="Queries">
       <UniqueIdentifier>{91e43426-e8a8-4753-8d61-374c3c62f081}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Formats">
+      <UniqueIdentifier>{7f12883a-3282-4d93-b13f-879b436bfd64}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Architecture">
+      <UniqueIdentifier>{8925c2a1-a825-414d-84b4-a0aedd0926c9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Architecture\amd64">
+      <UniqueIdentifier>{0a79bb7f-b784-44bd-8f02-ec198f2d8f61}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Architecture\arm64">
+      <UniqueIdentifier>{cee1cbfd-3d49-43f8-9efc-77d85f117d5f}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="External">
+      <UniqueIdentifier>{3062bc5f-e00e-4154-804d-97d4c9f9ecbc}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="amd64\register_details.hpp">
-      <Filter>amd64</Filter>
-    </ClInclude>
     <ClInclude Include="io\asserts.hpp">
       <Filter>I/O</Filter>
     </ClInclude>
@@ -55,9 +64,6 @@
     <ClInclude Include="includes\vtil\math">
       <Filter>Includes</Filter>
     </ClInclude>
-    <ClInclude Include="util\priority_list.hpp">
-      <Filter>Utility</Filter>
-    </ClInclude>
     <ClInclude Include="includes\vtil\utility">
       <Filter>Includes</Filter>
     </ClInclude>
@@ -81,9 +87,6 @@
     </ClInclude>
     <ClInclude Include="query\fixed_iterator.hpp">
       <Filter>Queries</Filter>
-    </ClInclude>
-    <ClInclude Include="util\critical_section.hpp">
-      <Filter>Utility</Filter>
     </ClInclude>
     <ClInclude Include="util\copy_on_write.hpp">
       <Filter>Utility</Filter>
@@ -118,12 +121,6 @@
     <ClInclude Include="util\lt_typeid.hpp">
       <Filter>Utility</Filter>
     </ClInclude>
-    <ClInclude Include="amd64\disassembler.hpp">
-      <Filter>amd64</Filter>
-    </ClInclude>
-    <ClInclude Include="amd64\assembler.hpp">
-      <Filter>amd64</Filter>
-    </ClInclude>
     <ClInclude Include="util\dynamic_size.hpp">
       <Filter>Utility</Filter>
     </ClInclude>
@@ -139,32 +136,116 @@
     <ClInclude Include="util\range.hpp">
       <Filter>Utility</Filter>
     </ClInclude>
+    <ClInclude Include="util\reverse_iterator.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\conditional_lock.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\numeric_iterator.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\multivariate.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="formats\winpe.hpp">
+      <Filter>Formats</Filter>
+    </ClInclude>
+    <ClInclude Include="formats\image_descriptor.hpp">
+      <Filter>Formats</Filter>
+    </ClInclude>
+    <ClInclude Include="includes\vtil\formats">
+      <Filter>Includes</Filter>
+    </ClInclude>
+    <ClInclude Include="arch\amd64\amd64_assembler.hpp">
+      <Filter>Architecture\amd64</Filter>
+    </ClInclude>
+    <ClInclude Include="arch\amd64\amd64_disassembler.hpp">
+      <Filter>Architecture\amd64</Filter>
+    </ClInclude>
+    <ClInclude Include="arch\amd64\amd64_register_details.hpp">
+      <Filter>Architecture\amd64</Filter>
+    </ClInclude>
+    <ClInclude Include="arch\register_mapping.hpp">
+      <Filter>Architecture</Filter>
+    </ClInclude>
+    <ClInclude Include="arch\arm64\arm64_assembler.hpp">
+      <Filter>Architecture\arm64</Filter>
+    </ClInclude>
+    <ClInclude Include="arch\arm64\arm64_disassembler.hpp">
+      <Filter>Architecture\arm64</Filter>
+    </ClInclude>
+    <ClInclude Include="arch\arm64\arm64_register_details.hpp">
+      <Filter>Architecture\arm64</Filter>
+    </ClInclude>
+    <ClInclude Include="util\object_pool.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\thread_identifier.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\static_warning.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="ext\colony.hpp">
+      <Filter>External</Filter>
+    </ClInclude>
+    <ClInclude Include="util\random.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\profiler.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\bitmap.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\enumerator.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\type_helpers.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\deferred_value.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\trilean.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="amd64\register_details.cpp">
-      <Filter>amd64</Filter>
-    </ClCompile>
     <ClCompile Include="io\logger.cpp">
       <Filter>I/O</Filter>
     </ClCompile>
     <ClCompile Include="math\operators.cpp">
       <Filter>Math</Filter>
     </ClCompile>
-    <ClCompile Include="util\critical_section.cpp">
-      <Filter>Utility</Filter>
-    </ClCompile>
     <ClCompile Include="util\variant.cpp">
       <Filter>Utility</Filter>
     </ClCompile>
-    <ClCompile Include="amd64\assembler.cpp">
-      <Filter>amd64</Filter>
+    <ClCompile Include="arch\amd64\amd64_assembler.cpp">
+      <Filter>Architecture\amd64</Filter>
     </ClCompile>
-    <ClCompile Include="amd64\disassembler.cpp">
-      <Filter>amd64</Filter>
+    <ClCompile Include="arch\amd64\amd64_disassembler.cpp">
+      <Filter>Architecture\amd64</Filter>
+    </ClCompile>
+    <ClCompile Include="arch\arm64\arm64_assembler.cpp">
+      <Filter>Architecture\arm64</Filter>
+    </ClCompile>
+    <ClCompile Include="arch\arm64\arm64_disassembler.cpp">
+      <Filter>Architecture\arm64</Filter>
+    </ClCompile>
+    <ClCompile Include="formats\winpe.cpp">
+      <Filter>Formats</Filter>
+    </ClCompile>
+    <ClCompile Include="util\thread_identifier.cpp">
+      <Filter>Utility</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="VTIL-Common.licenseheader" />
+    <None Include="includes\vtil\arm64">
+      <Filter>Includes</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Text Include="CMakeLists.txt" />

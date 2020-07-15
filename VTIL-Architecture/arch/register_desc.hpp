@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -29,7 +29,9 @@
 #include <string>
 #include <vtil/math>
 #include <vtil/utility>
-#include <vtil/amd64> // TODO: Remove me.
+#include <vtil/amd64>
+#include <vtil/arm64>
+#include "identifier.hpp"
 
 namespace vtil
 {
@@ -90,13 +92,21 @@ namespace vtil
 	{
 		// Flags of the current register, as described in "enum register_flag".
 		//
-		uint32_t flags;
+		uint32_t flags = 0;
 
 		// Arbitrary identifier, is intentionally not universally unique to let ids of user registers make use
 		// of the full 64-bit range as otherwise we'd have to reserve some magic numbers for flags and stack pointer. 
 		// Due to this reason, flags should also be compared when doing comparison.
 		//
-		size_t local_id;
+		union
+		{
+			struct
+			{
+				uint64_t local_id     : 56;
+				uint64_t architecture : 8;
+			};
+			uint64_t combined_id = 0;
+		};
 		
 		// Size of the register in bits.
 		//
@@ -104,32 +114,39 @@ namespace vtil
 
 		// Offset at which we read from the full 64-bit version.
 		//
-		bitcnt_t bit_offset;
+		bitcnt_t bit_offset = 0;
 
 		// Default constructor / move / copy.
 		//
-		register_desc() = default;
-		register_desc( register_desc&& ) = default;
-		register_desc( const register_desc& ) = default;
-		register_desc& operator=( register_desc&& ) = default;
-		register_desc& operator=( const register_desc& ) = default;
+		constexpr register_desc() = default;
+		constexpr register_desc( register_desc&& ) = default;
+		constexpr register_desc( const register_desc& ) = default;
+		constexpr register_desc& operator=( register_desc&& ) = default;
+		constexpr register_desc& operator=( const register_desc& ) = default;
 
 		// Construct a fully formed register.
 		//
-		register_desc( uint32_t flags, size_t id, bitcnt_t bit_count, bitcnt_t bit_offset = 0 )
-			: flags( flags ), local_id( id ), bit_count( bit_count ), bit_offset( bit_offset ) 
-		{ 
-			fassert( is_valid() ); 
+		constexpr register_desc( uint32_t flags, uint64_t id, bitcnt_t bit_count, bitcnt_t bit_offset = 0, uint64_t architecture = 0 )
+			: flags( flags ), local_id( id ), bit_count( bit_count ), bit_offset( bit_offset ), architecture( architecture )
+		{
+			is_valid( true );
 		}
 
 		// Returns whether the descriptor is valid or not.
 		//
-		bool is_valid() const 
-		{ 
+		constexpr bool is_valid( bool force = false ) const
+		{
+#define validate(...) { 																		 \
+				if ( !( __VA_ARGS__ ) )															 \
+				{																				 \
+					if ( force ) throw std::logic_error{ "Register validation failed." };		 \
+					else         return false;													 \
+				}																				 \
+			}
+
 			// Validate bit count and offset.
 			//
-			if ( bit_count == 0 || ( bit_count + bit_offset ) > 64 )
-				return false;
+			validate( bit_count != 0 && ( bit_count + bit_offset ) <= 64 );
 
 			// Handle special registers:
 			//
@@ -141,13 +158,11 @@ namespace vtil
 			{
 				// Should be physical, non-volatile and writable.
 				//
-				if ( is_volatile() || is_read_only() || !is_physical() )
-					return false;
+				validate( !is_volatile() && is_physical() && !is_read_only() );
 
 				// Must have no local identifier.
 				//
-				if ( local_id != 0 )
-					return false;
+				validate( local_id == 0 );
 			}
 			// If register holds the flags:
 			//
@@ -155,13 +170,11 @@ namespace vtil
 			{
 				// Should be physical, non-volatile and writable.
 				//
-				if ( is_volatile() || is_read_only() || !is_physical() )
-					return false;
+				validate( !is_volatile() && is_physical() && !is_read_only() );
 
 				// Must have no local identifier.
 				//
-				if ( local_id != 0 )
-					return false;
+				validate( local_id == 0 );
 			}
 			// If register holds the image base:
 			//
@@ -169,13 +182,11 @@ namespace vtil
 			{
 				// Should be virtual, non-volatile and read-only.
 				//
-				if ( is_volatile() || !is_virtual() || !is_read_only() )
-					return false;
+				validate( !is_volatile() && is_virtual() && is_read_only() );
 
 				// Must have no local identifier.
 				//
-				if ( local_id != 0 )
-					return false;
+				validate( local_id == 0 );
 			}
 			// If register holds the [undefined] special:
 			//
@@ -183,50 +194,50 @@ namespace vtil
 			{
 				// Should be virtual, volatile and non-read-only.
 				//
-				if ( !is_volatile() || !is_virtual() || is_read_only() )
-					return false;
+				validate( is_volatile() && is_virtual() && !is_read_only() );
 
 				// Must have no local identifier.
 				//
-				if ( local_id != 0 )
-					return false;
+				validate( local_id == 0 );
 			}
 			// Otherwise must have no special flags.
 			//
-			else if( special_flags != 0 )
+			else
 			{
-				return false;
+				validate( special_flags == 0 );
 			}
 
 			// If register is physical, it can't be local.
 			//
-			return !is_physical() || !is_local();
+			validate( !is_physical() || !is_local() );
+			return true;
+#undef validate
 		}
 
 		// Simple helpers to determine some properties.
 		// 
-		bool is_flags() const { return flags & register_flags; }
-		bool is_undefined() const { return flags & register_undefined; }
-		bool is_local() const { return flags & register_local; }
-		bool is_global() const { return ( ~flags ) & register_local; }
-		bool is_virtual() const { return ( ~flags ) & register_physical; }
-		bool is_physical() const { return flags & register_physical; }
-		bool is_volatile() const { return flags & register_volatile; }
-		bool is_read_only() const { return flags & register_readonly; }
-		bool is_stack_pointer() const { return flags & register_stack_pointer; }
-		bool is_image_base() const { return flags & register_image_base; }
-		bool is_special() const { return flags & register_special; }
-		bool is_internal() const { return ( flags & register_internal ) == register_internal; }
+		constexpr bool is_flags() const { return flags & register_flags; }
+		constexpr bool is_undefined() const { return flags & register_undefined; }
+		constexpr bool is_local() const { return flags & register_local; }
+		constexpr bool is_global() const { return ( ~flags ) & register_local; }
+		constexpr bool is_virtual() const { return ( ~flags ) & register_physical; }
+		constexpr bool is_physical() const { return flags & register_physical; }
+		constexpr bool is_volatile() const { return flags & register_volatile; }
+		constexpr bool is_read_only() const { return flags & register_readonly; }
+		constexpr bool is_stack_pointer() const { return flags & register_stack_pointer; }
+		constexpr bool is_image_base() const { return flags & register_image_base; }
+		constexpr bool is_special() const { return flags & register_special; }
+		constexpr bool is_internal() const { return ( flags & register_internal ) == register_internal; }
 
 		// Returns the mask for the bits that this register's value would occupy in a 64-bit register.
 		//
-		uint64_t get_mask() const { return math::fill( bit_count, bit_offset ); }
+		constexpr uint64_t get_mask() const { return math::fill( bit_count, bit_offset ); }
 
 		// Checks whether bits from this register and the other register overlap.
 		//
-		bool overlaps( const register_desc& o ) const 
+		constexpr bool overlaps( const register_desc& o ) const
 		{ 
-			if ( local_id != o.local_id || flags != o.flags ) 
+			if ( combined_id != o.combined_id || flags != o.flags )
 				return false;
 			return get_mask() & o.get_mask();
 		}
@@ -260,15 +271,23 @@ namespace vtil
 			// Otherwise use the default naming.
 			//
 			if ( ( flags & register_physical ) )
-				#pragma warning(suppress: 4267)
-				return prefix + amd64::name( amd64::extend( local_id ) ) + suffix;
-			else
-				return prefix + "vr" + std::to_string( local_id ) + suffix;
+			{
+				switch ( architecture )
+				{
+					case architecture_amd64:
+						return prefix + amd64::name( amd64::extend( math::narrow_cast<uint8_t>( local_id ) ) ) + suffix;
+					case architecture_arm64:
+						return prefix + arm64::name( arm64::extend( math::narrow_cast<uint8_t>( local_id ) ) ) + suffix;
+					default:
+						unreachable();
+				}
+			}
+			return prefix + "vr" + std::to_string( local_id ) + suffix;
 		}
 
 		// Declare reduction.
 		//
-		REDUCE_TO( bit_count, local_id, flags, bit_offset );
+		REDUCE_TO( bit_count, combined_id, flags, bit_offset );
 	};
 
 	// Should be overriden by the user to describe conversion of the
@@ -278,7 +297,7 @@ namespace vtil
 	template<typename T>
 	struct register_cast
 	{
-		register_desc operator()( const T& value )
+		constexpr register_desc operator()( const T& value )
 		{
 			static_assert( sizeof( T ) == -1, "Failed to cast given operand into a register type." );
 			return {};
@@ -287,20 +306,47 @@ namespace vtil
 	template<> 
 	struct register_cast<register_desc>
 	{
-		template<typename T>
-		auto operator()( T&& v ) { return std::forward<T>( v ); }
+		constexpr register_desc operator()( register_desc v ) { return v; }
+	};
+	template<>
+	struct register_cast<x86_reg>
+	{
+		constexpr register_desc operator()( x86_reg value )
+		{
+			auto [base, offset, size] = amd64::resolve_mapping( value );
+			if ( base == X86_REG_RSP )
+				return { register_physical | register_stack_pointer, 0, size * 8, offset * 8            };
+			else if ( base == X86_REG_EFLAGS )													       
+				return { register_physical | register_flags,         0, size * 8, offset * 8            };
+			else
+				return { register_physical, ( uint64_t ) base, size * 8, offset * 8, architecture_amd64 };
+		}
+	};
+	template<>
+	struct register_cast<arm64_reg>
+	{
+		constexpr register_desc operator()( arm64_reg value )
+		{
+			auto [base, offset, size] = arm64::resolve_mapping( value );
+			if ( base == ARM64_REG_SP )
+				return { register_physical | register_stack_pointer, 0, size * 8, offset * 8            };
+			else if ( base == ARM64_REG_NZCV )
+				return { register_physical | register_flags,         0, size * 8, offset * 8            };
+			else
+				return { register_physical, ( uint64_t ) base, size * 8, offset * 8, architecture_arm64 };
+		}
 	};
 
 	// VTIL special registers.
 	//
-	static const register_desc UNDEFINED =   { register_volatile | register_undefined,     0, 64 };
-	static const register_desc REG_IMGBASE = { register_readonly | register_image_base,    0, 64 };
-	static const register_desc REG_FLAGS =   { register_physical | register_flags,         0, 64 };
-	static const register_desc REG_SP =      { register_physical | register_stack_pointer, 0, 64 };
+	static constexpr register_desc UNDEFINED =   { register_volatile | register_undefined,     0, 64 };
+	static constexpr register_desc REG_IMGBASE = { register_readonly | register_image_base,    0, 64 };
+	static constexpr register_desc REG_FLAGS =   { register_physical | register_flags,         0, 64 };
+	static constexpr register_desc REG_SP =      { register_physical | register_stack_pointer, 0, 64 };
 
 	// Helper to make undefined of N bits.
 	//
-	static const register_desc make_undefined( bitcnt_t sz )
+	static constexpr register_desc make_undefined( bitcnt_t sz )
 	{
 		register_desc copy = UNDEFINED;
 		copy.bit_count = sz;

@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -35,8 +35,40 @@
 #include "../arch/register_desc.hpp"
 #include "../routine/basic_block.hpp"
 
+// Forward declare tracer type.
+//
+namespace vtil { struct tracer; };
+
 namespace vtil::symbolic
 {
+	// Structure describing how an instruction accesses a variable.
+	//
+	struct access_details
+	{
+		// Relative offset to the variable, in bits.
+		//
+		bitcnt_t bit_offset = 0;
+
+		// Number of bits the instruction wrote at that offset.
+		// - Note: Not necessarily all have to be overlapping with the variable.
+		//
+		bitcnt_t bit_count = 0;
+
+		// Type of access.
+		//
+		bool read = false;
+		bool write = false;
+		bool unknown = false;
+
+		// Cast to bool to check if non-null access.
+		//
+		explicit operator bool() const { return bit_count != 0; }
+
+		// Check if details are unknown.
+		//
+		bool is_unknown() { return unknown; }
+	};
+
 	// A pseudo single-static-assignment variable describing the state of a 
 	// memory location or a register at a given index into the instruction stream.
 	//
@@ -66,9 +98,10 @@ namespace vtil::symbolic
 				: base( std::move( base ) ), bit_count( bit_count ) {}
 
 			// Add a decay wrapper.
+			// - Always return constant since this value should not be modified 
+			//   without recomputation of the xpointers.
 			//
-			expression& decay() { return base.base.decay(); }
-			const expression& decay() const { return base.base.decay(); }
+			const expression::reference& decay() const { return base.base; }
 
 			// Declare reduction.
 			//
@@ -110,7 +143,7 @@ namespace vtil::symbolic
 
 		// Returns whether the variable is valid or not.
 		//
-		bool is_valid() const;
+		bool is_valid( bool force = false ) const;
 
 		// Swaps the current iterator.
 		//
@@ -146,11 +179,22 @@ namespace vtil::symbolic
 
 		// Declare reduction.
 		//
-		REDUCE_TO( dereference_if( !at.is_end(), at ).pointer, at.is_valid() ? at.container->entry_vip : invalid_vip, descriptor, is_branch_dependant );
+		REDUCE_TO( at.is_end() ? nullptr : at.operator->(), at.is_valid() ? at.container : nullptr, descriptor, is_branch_dependant );
 
 		// Packs all the variables in the expression where it'd be optimal.
 		//
-		static expression pack_all( const expression& exp );
+		static expression::reference& pack_all( expression::reference& exp );
+		[[nodiscard]] static expression::reference pack_all( const expression::reference& exp );
+		[[nodiscard]] static expression pack_all( const expression& exp ) { return *pack_all( make_local_reference( &exp ) ); }
+
+		// Checks if the variable is read by / written by / accessed by the given instruction, 
+		// returns nullopt it could not be known at compile-time, otherwise the
+		// access details as described by access_details. Tracer is used for
+		// pointer resolving, if nullptr passed will use default tracer.
+		//
+		access_details read_by( const il_const_iterator& it, tracer* tr = nullptr, bool xblock = false ) const;
+		access_details written_by( const il_const_iterator& it, tracer* tr = nullptr, bool xblock = false ) const;
+		access_details accessed_by( const il_const_iterator& it, tracer* tr = nullptr, bool xblock = false ) const;
 	};
 
 	// Wrappers for quick variable->expression creaton.

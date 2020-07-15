@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -38,15 +38,6 @@
 #include <optional>
 #include "concept.hpp"
 #include "../io/asserts.hpp"
-
-// [Configuration]
-// Determine stack buffer clamping range.
-//
-#ifndef VTIL_STACK_BUFFER_SIZE_RANGE
-	#define VTIL_STACK_BUFFER_SIZE_RANGE	0x100, 0x1000
-#else
-	static_assert( std::initializer_list{ VTIL_STACK_BUFFER_SIZE_RANGE }.size() == 2, "Invalid buffer range specification." );
-#endif
 
 namespace vtil
 {
@@ -135,6 +126,10 @@ namespace vtil
 		template <typename T2>
 		stack_buffered_allocator( const stack_buffered_allocator<T2, real_type>& o ) 
 			: state( ( stack_buffer_state<T, real_type>* ) o.state ) {}
+		//
+		template <typename T2>
+		stack_buffered_allocator( stack_buffered_allocator<T2, real_type>&& o ) 
+			: state( ( stack_buffer_state<T, real_type>* ) o.state ) {}
 
 		// Allocators are only equivalent if the internal state references
 		// the same stack buffer.
@@ -198,16 +193,13 @@ namespace vtil
 		typename container_t = impl::swap_allocator_t<T, allocator_t>>
 	struct stack_buffered_container : public container_t
 	{
-		static constexpr size_t _size_range[] = { VTIL_STACK_BUFFER_SIZE_RANGE };
-
-		// Clamp the number of bytes in the buffer to [0x100, 0x1000].
-		// - Append 0x20 bytes for _DEBUG binaries to compensate for std::_Container_proxy;
+		// Append 0x20 bytes for _DEBUG binaries to compensate for std::_Container_proxy;
 		//
 		static constexpr size_t align_mask = alignof( T ) - 1;
 #ifdef _DEBUG
-		static constexpr size_t buffer_size = std::clamp<size_t>( N * sizeof( typename T::value_type ), _size_range[ 0 ], _size_range[ 1 ] ) + ( 0x20 + sizeof( T ) + align_mask ) * 2;
+		static constexpr size_t buffer_size = N * sizeof( typename T::value_type ) + ( 0x20 + sizeof( T ) + align_mask ) * 2;
 #else
-		static constexpr size_t buffer_size = std::clamp<size_t>( N * sizeof( typename T::value_type ), _size_range[ 0 ], _size_range[ 1 ] );
+		static constexpr size_t buffer_size = N * sizeof( typename T::value_type );
 #endif
 
 		// Buffer aligned to match the alignment of T. 
@@ -225,6 +217,16 @@ namespace vtil
 			if constexpr( do_reserve )
 				container_t::reserve( N ); 
 		}
+
+		// Disallow copy.
+		//
+		stack_buffered_container( const stack_buffered_container& ) = delete;
+		stack_buffered_container& operator=( const stack_buffered_container& ) = delete;
+
+		// Decay to original type via copy.
+		//
+		container_t decay() const { return { container_t::begin(), container_t::end() }; }
+		operator container_t() const { return decay(); }
 	};
 
 	// Wrap basic string derivatives:

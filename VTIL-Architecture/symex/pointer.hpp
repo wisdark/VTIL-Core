@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -29,16 +29,16 @@
 #include <string>
 #include <optional>
 #include <array>
+#include <set>
 #include <vtil/symex>
 #include <vtil/utility>
+#include "../arch/register_desc.hpp"
 
 // [Configuration]
-// Determine whether we should use the simplification of (A-B) as the delta 
-// or the value estimated by the xpointers, and the number of xpointers we use.
+// Determine the number of xpointers we use to estimate overlapping.
 //
-#ifndef VTIL_SYM_PTR_SAFE_DISP
-	#define VTIL_SYM_PTR_SAFE_DISP 0
-	#define VTIL_SYM_PTR_XPTR_KEYS 8
+#ifndef VTIL_SYM_PTR_XPTR_KEYS
+	#define VTIL_SYM_PTR_XPTR_KEYS 4
 #endif
 
 namespace vtil::symbolic
@@ -47,17 +47,23 @@ namespace vtil::symbolic
 	//
 	struct pointer : reducable<pointer>
 	{
+		// List of pointer bases we consider to be restricted, can be expanded by user
+		// but defaults to image base and stack pointer.
+		//
+		static std::set<register_desc> restricted_bases;
+
 		// Declares the symbolic pointer weak.
 		//
 		struct make_weak
 		{
-			pointer operator()( pointer p ) { return ( p.strenght = INT32_MIN, p ); }
+			pointer operator()( pointer&& p ) { return ( p.strength = INT32_MIN, p ); }
+			pointer operator()( pointer p ) { return ( p.strength = INT32_MIN, p ); }
 		};
 
 		// The symbolic expression that will represent the virtual address 
 		// if resolved to an immediate value.
 		// 
-		boxed_expression base;
+		expression::reference base;
 
 		// Special flags of the registers the base contains.
 		//
@@ -65,7 +71,7 @@ namespace vtil::symbolic
 		
 		// Strength of the pointer. -1 when it has unknowns, +1 on fully known value.
 		//
-		int32_t strenght = 0;
+		int32_t strength = 0;
 
 		// X-Pointers are N-64-bit estimations of the actual virtual adresss.
 		//
@@ -76,17 +82,17 @@ namespace vtil::symbolic
 		pointer() { xpointer.fill( 0 ); }
 		pointer( std::nullptr_t ) : pointer() {}
 
+		// Construct from symbolic expression.
+		//
+		pointer( const expression::reference& base );
+		pointer( const expression& base ) : pointer( ( ( expression::reference&& ) make_local_reference( &base ) ) ) {}
+
 		// Default copy/move.
 		//
 		pointer( pointer&& ) = default;
 		pointer( const pointer& ) = default;
 		pointer& operator=( pointer&& ) = default;
 		pointer& operator=( const pointer& ) = default;
-
-		// Construct from symbolic expression.
-		//
-		pointer( expression&& base );
-		pointer( const expression& base ) : pointer( expression{ base } ) {}
 
 		// Simple pointer offseting.
 		//
@@ -97,15 +103,23 @@ namespace vtil::symbolic
 		//
 		std::optional<int64_t> operator-( const pointer& o ) const;
 
+		// Checks whether the two pointers can overlap in terms of real destination, 
+		// note that it will consider [rsp+C1] and [rsp+C2] "overlapping" so you will
+		// need to check the displacement with the variable sizes considered if you 
+		// are checking "is overlapping" instead.
+		//
+		bool can_overlap( const pointer& o ) const;
+		
+		// Same as can_overlap but will return false if flags do not overlap.
+		//
+		bool can_overlap_s( const pointer& o ) const;
+
 		// Conversion to human-readable format.
 		//
-		std::string to_string() const
-		{
-			return base.to_string();
-		}
+		std::string to_string() const { return base ? base->to_string() : "null"; }
 
 		// Define reduction.
 		//
-		REDUCE_TO( flags, strenght, xpointer, base );
+		REDUCE_TO( flags, strength, xpointer, base ? ( boxed_expression& ) *base : make_default<boxed_expression>() );
 	};
 };

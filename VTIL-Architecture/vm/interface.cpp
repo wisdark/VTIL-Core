@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -36,7 +36,7 @@ namespace vtil
 	{
 		// Declare a helper to convert operands of current instruction into expressions.
 		//
-		auto cvt_operand = [ & ] ( int i ) -> symbolic::expression
+		auto cvt_operand = [ & ] ( int i ) -> symbolic::expression::reference
 		{
 			const operand& op = ins.operands[ i ];
 
@@ -46,7 +46,7 @@ namespace vtil
 			{
 				// Trace the source register.
 				//
-				symbolic::expression result = read_register( op.reg() );
+				symbolic::expression::reference result = read_register( op.reg() );
 
 				// If stack pointer, add the current virtual offset.
 				//
@@ -68,26 +68,26 @@ namespace vtil
 
 		// If MOV/MOVSX:
 		//
-		if ( bool cast_signed = *ins.base == ins::movsx;
-			 *ins.base == ins::mov || cast_signed )
+		if ( bool cast_signed = ins.base == &ins::movsx;
+			 ins.base == &ins::mov || cast_signed )
 		{
 			// Convert source operand, resize according to the destination size and
 			// signed-ness of the instruction and write the read value to the register.
 			//
 			write_register(
 				ins.operands[ 0 ].reg(),
-				cvt_operand( 1 ).resize( bitcnt_t( ins.operands[ 0 ].size() * 8 ), cast_signed )
+				cvt_operand( 1 )->resize( ins.operands[ 0 ].bit_count(), cast_signed )
 			);
 			return true;
 		}
 		// If LDD:
 		//
-		else if ( *ins.base == ins::ldd )
+		else if ( ins.base == &ins::ldd )
 		{
 			// Query base pointer without using the wrapper to skip SP adjustment and 
 			// add offset. Read the value and resize to written size.
 			//
-			auto [base, offset] = ins.get_mem_loc();
+			auto [base, offset] = ins.memory_location();
 			auto exp = read_memory(
 				read_register( base ) + offset,
 				ins.operands[ 0 ].size()
@@ -103,18 +103,18 @@ namespace vtil
 		}
 		// If STR:
 		//
-		else if ( *ins.base == ins::str )
+		else if ( ins.base == &ins::str )
 		{
 			// Read the source operand and byte-align.
 			//
 			auto src = cvt_operand( 2 );
-			src.resize( ( src.size() + 7 ) & ~7 );
+			src.resize( ( src->size() + 7 ) & ~7 );
 
 			// Query base pointer without using the wrapper to skip SP adjustment and 
 			// add offset. Write the source to the pointer.
 			//
-			auto [base, offset] = ins.get_mem_loc();
-			write_memory( read_register( base ) + offset, src );
+			auto [base, offset] = ins.memory_location();
+			write_memory( read_register( base ) + offset, std::move( src ) );
 			return true;
 		}
 		// If any symbolic operator:
@@ -161,7 +161,7 @@ namespace vtil
 				else if ( ( ins.operands[ 0 ].size() + ins.operands[ 1 ].size() ) <= 8 )
 				{
 					auto op1_low = cvt_operand( 0 );
-					auto op1 = op1_low | ( op1_high.resize( op1_high.size() + op1_low.size() ) << op1_low.size() );
+					auto op1 = op1_low | ( op1_high->resize( op1_high->size() + op1_low->size() ) << op1_low->size() );
 					result = { op1, op_id, cvt_operand( 2 ) };
 				}
 				// If operation is 65 bits or bigger:
@@ -175,7 +175,7 @@ namespace vtil
 
 			// Write the result to the destination register.
 			//
-			write_register( ins.operands[ 0 ].reg(), result );
+			write_register( ins.operands[ 0 ].reg(), std::move( result ) );
 
 			// Operand 0 should always be the result for this class.
 			//
@@ -184,7 +184,7 @@ namespace vtil
 		}
 		// If NOP:
 		//
-		else if ( *ins.base == ins::nop )
+		else if ( ins.base == &ins::nop )
 		{
 			// No operation.
 			//
@@ -232,10 +232,10 @@ namespace vtil
 				//
 				if ( it->base->writes_memory() )
 				{
-					auto [base, offset] = it->get_mem_loc();
+					auto [base, offset] = it->memory_location();
 					write_memory(
-						read_register( it->get_mem_loc().first ) + it->get_mem_loc().second,
-						symbolic::make_undefined_ex( it->access_size() ? it->access_size() * 8 : 64 )
+						read_register( base ) + offset,
+						symbolic::make_undefined_ex( it->access_size() ? it->access_size() : 64 )
 					);
 				}
 			}

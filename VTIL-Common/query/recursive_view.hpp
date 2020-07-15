@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -28,12 +28,48 @@
 #pragma once
 #include <type_traits>
 #include <vector>
+#include <map>
 #include "view.hpp"
 #include "query_descriptor.hpp"
 #include "../io/asserts.hpp"
+#include "../util/variant.hpp"
 
 namespace vtil::query
 {
+	// Thread local pointer to the current local mapping of stack variables.
+	//
+	namespace impl
+	{
+		using local_state_t = std::map<const void*, variant>;
+		static thread_local local_state_t* local_state = nullptr;
+	};
+
+	// Gets the recursive-local copy of the given variable on stack.
+	//
+	template<typename T>
+	static T& rlocal( T& alias )
+	{
+		// If local state exists:
+		//
+		if ( impl::local_state )
+		{
+			// Search for the variable, if found return local state.
+			//
+			auto it = impl::local_state->find( ( void* ) &alias );
+			fassert( it != impl::local_state->end() );
+			return it->second.get<T>();
+		}
+
+		// Otherwise, return as is.
+		//
+		return alias;
+	}
+	template<typename P0, typename... PN>
+	static std::tuple<P0&, PN&...> rlocal( P0& p0, PN&... pn )
+	{
+		return { rlocal<P0>( p0 ), rlocal<PN>( pn )... };
+	}
+
 	// Recursive results are used to collect results
 	// in a way that clearly indicates the path taken
 	// to get the result, and the source container.
@@ -57,6 +93,18 @@ namespace vtil::query
 		//
 		std::vector<recursive_result> paths;
 
+		// Counts the different paths.
+		//
+		size_t count_paths() const
+		{
+			if ( paths.size() <= 1 )
+				return 1;
+			size_t n = 0;
+			for ( auto& path : paths )
+				n += path.count_paths();
+			return n;
+		}
+
 		// Merges the results of all or extended basic-blocks.
 		//
 		template<typename>
@@ -68,13 +116,13 @@ namespace vtil::query
 			// Apply to each path recursively.
 			//
 			for ( auto& path : paths )
-				path = path.flatten();
+				path.flatten( force );
 
 			// If single possible path or force mode:
 			//
 			if ( paths.size() == 1 || force )
 			{
-				std::vector paths_p = paths;
+				std::vector paths_p = std::move( paths );
 				paths.clear();
 
 				for ( auto& r : paths_p )
@@ -83,12 +131,12 @@ namespace vtil::query
 					//
 					is_looping |= r.is_looping;
 					if( !r.paths.empty() )
-						paths.insert( paths.end(), r.paths.begin(), r.paths.end() );
+						paths.insert( paths.end(), std::make_move_iterator( r.paths.begin() ), std::make_move_iterator( r.paths.end() ) );
 
 					// Either combine vectors or use the addition operator.
 					//
 					if constexpr ( is_std_vector<result_type>::value )
-						result.insert( result.end(), r.result.begin(), r.result.end() );
+						result.insert( result.end(), std::make_move_iterator( r.result.begin() ), std::make_move_iterator( r.result.end() ) );
 					else
 						result += r.result;
 				}
@@ -116,7 +164,7 @@ namespace vtil::query
 		using fn_container_filter = std::function<bool( const container_type* src, const container_type * dst, bool first_time )>;
 		fn_container_filter filter = {};
 
-		// Special iterator saved by the root to mark the 
+		// Special iterator saved by the root to mark the
 		// beginning of it's iteration so loops can properly
 		// lead to it.
 		//
@@ -129,6 +177,21 @@ namespace vtil::query
 		// visit is in this list or not.
 		//
 		std::set<const void*> visited = {};
+
+		// Maps the each local variable on caller stack to the recursive copies.
+		//
+		impl::local_state_t local_variables;
+
+		// Binds the local variable to each possible recursive path,
+		// should be called prior to the beginning of the iteration.
+		//
+		template<typename... PN>
+		recursive_view& bind( PN&... pn )
+		{
+			static constexpr auto ignore = [ ] ( ... ) {};
+			ignore( ( local_variables[ &pn ] = pn, 0 )... );
+			return *this;
+		}
 
 		// Constructs a recursive view from the view structure passed.
 		//
@@ -186,16 +249,16 @@ namespace vtil::query
 		
 		auto& reverse() { view.reverse(); return *this; }
 		template<typename T> auto& run( T next ) { view.run( next ); return *this; }
-		template<typename T> auto& with( T next ) { view.with( next ); return *this; }
 		template<typename T> auto& where( T next ) { view.where( next ); return *this; }
 		template<typename T> auto& until( T next ) { view.until( next ); return *this; }
 		template<typename T> auto& whilst( T next ) { view.whilst( next ); return *this; }
+		template<typename T> auto& control( T next ) { view.control( next ); return *this; }
 		
 		template<typename projector_type>
-		auto project( projector_type next ) { return recursive_view<decltype( view.project( next ) )>{ view.project( next ), it0.container != nullptr, filter }; }
+		auto project( projector_type next ) { auto res = recursive_view<decltype( view.project( next ) )>{ view.project( next ), it0.container != nullptr, filter }; res.local_variables = local_variables; return res; }
 		template<typename projector_type>
-		auto reproject( projector_type next ) { return recursive_view<decltype( view.reproject( next ) )>{ view.reproject( next ), it0.container != nullptr, filter }; }
-		auto unproject() { return recursive_view<decltype( view.unproject() )>{ view.unproject(), it0.container != nullptr, filter }; }
+		auto reproject( projector_type next ) { auto res = recursive_view<decltype( view.reproject( next ) )>{ view.reproject( next ), it0.container != nullptr, filter }; res.local_variables = local_variables; return res; }
+		auto unproject() { auto res = recursive_view<decltype( view.unproject() )>{ view.unproject(), it0.container != nullptr, filter }; res.local_variables = local_variables; return res; }
 
 		// [Collection method]
 		// Invokes the enumerator for each entry, if enumerator returns void/bool
@@ -208,8 +271,14 @@ namespace vtil::query
 			typename return_type = decltype( std::declval<enumerator_type>()( std::declval<projected_type>() ) ),
 			typename result_type = std::conditional_t<std::is_same_v<return_type, void> || std::is_same_v<return_type, bool>, size_t, std::vector<return_type>>
 		>
+		[[deprecated]]
 		recursive_result<result_type, container_type> for_each( const enumerator_type& enumerator )
 		{
+			// Set local state.
+			//
+			auto* prev_state = impl::local_state;
+			impl::local_state = &local_variables;
+			
 			// Begin the iteration loop.
 			//
 			recursive_result<result_type, container_type> output = { false, view.query.iterator.container, {}, {} };
@@ -243,22 +312,20 @@ namespace vtil::query
 					std::vector desc_list = view.query.recurse();
 					for ( auto& desc : desc_list )
 					{
-						auto visited_copy = visited;
-
 						// If we did not already visit it:
 						//
-						bool first_visit = visited_copy.find( desc.iterator.container ) == visited_copy.end();
+						bool first_visit = visited.find( desc.iterator.container ) == visited.end();
 						if ( filter( view.query.iterator.container, desc.iterator.container, first_visit ) )
 						{
-							// Mark the container visited.
-							//
-							visited_copy.insert( desc.iterator.container );
 
 							// Create another recursive view with the new query.
 							//
 							recursive_view view_new = clone();
 							view_new.view.query = desc;
-							view_new.visited = visited_copy;
+
+							// Mark the container visited.
+							//
+							if ( first_visit ) view_new.visited.insert( desc.iterator.container );
 
 							// If iterator belongs to the same container as the root:
 							//
@@ -275,7 +342,7 @@ namespace vtil::query
 							//
 							recursive_result<result_type, container_type> result = view_new.for_each<enumerator_type, return_type, result_type>( enumerator );
 							result.is_looping = partial_loop;
-							output.paths.push_back( result );
+							output.paths.emplace_back( std::move( result ) );
 						}
 						// Otherwise:
 						//
@@ -293,14 +360,18 @@ namespace vtil::query
 				}
 			}
 
+			// Restore local state.
+			//
+			impl::local_state = prev_state;
+
 			// Return the final result.
 			//
 			return output;
 		}
 
 		// [Collection method]
-		// Collects each entry in std::vector<> and saves that in the 
-		// recursive_result structure. Continues appending paths and 
+		// Collects each entry in std::vector<> and saves that in the
+		// recursive_result structure. Continues appending paths and
 		// results in that structure until stream is finished.
 		//
 		auto collect()
@@ -318,11 +389,12 @@ namespace vtil::query
 		}
 
 		// [Collection method]
-		// Collects first entry in std::vector<>, saves that in the 
-		// recursive_result structure and stops if applicable. 
-		// Otherwise continues appending paths in that structure 
+		// Collects first entry in std::vector<>, saves that in the
+		// recursive_result structure and stops if applicable.
+		// Otherwise continues appending paths in that structure
 		// until a valid entry is hit.
 		//
+		[[deprecated]]
 		auto first()
 		{
 			auto prev = view.query.controller;
@@ -341,6 +413,52 @@ namespace vtil::query
 				return 1;
 			};
 			return collect();
+		}
+
+		// [Collection method]
+		// Works similar to first but returns on first result regardless of other paths.
+		//
+		[[deprecated]]
+		std::optional<projected_type> first_g()
+		{
+			// Wrap the result in an exception so that we can manually roll-back stack.
+			//
+			struct result_wrapper { projected_type result; };
+
+			auto prev = view.query.controller;
+			auto& proj = view.project_value;
+			view.query.controller = [ prev, &proj ] ( auto& self, iterator_type i ) -> int
+			{
+				// If current iterator reports end or filtered-out,
+				// return as is.
+				//
+				int res = prev( self, i );
+				if ( res <= 0 )
+					return res;
+
+				// Throw the result as an exception.
+				//
+				throw result_wrapper{ .result = proj( self, i ) };
+			};
+
+			// Set local state.
+			//
+			auto* prev_state = impl::local_state;
+
+			// If collect returns, no results, else return as is.
+			//
+			try
+			{
+				collect();
+				return std::nullopt;
+			}
+			catch ( result_wrapper& ex )
+			{
+				// Restore local state and return.
+				//
+				impl::local_state = prev_state;
+				return std::move( ex.result );
+			}
 		}
 	};
 
@@ -361,7 +479,7 @@ namespace vtil::query
 	template<typename iterator_type,
 			 typename view_type = view<typename query_desc<iterator_type>::reference_type, query_desc<iterator_type>>
 	>
-	static auto create_recursive( query_desc<iterator_type> q, typename recursive_view<view_type>::fn_container_filter filter = {}, bool partial_visits = true, bool safe = true )
+	static auto make_recursive( query_desc<iterator_type> q, typename recursive_view<view_type>::fn_container_filter filter = {}, bool partial_visits = true, bool safe = true )
 	{
 		return recurse<view_type>
 		(
@@ -379,6 +497,6 @@ namespace vtil::query
 	>
 	static auto create_recursive( iterator_type r, int8_t dir = 0, typename recursive_view<view_type>::fn_container_filter filter = {}, bool partial_visits = true, bool safe = true )
 	{
-		return create_recursive( query_desc{ r, dir }, filter, partial_visits, safe );
+		return make_recursive( query_desc{ r, dir }, filter, partial_visits, safe );
 	}
 };

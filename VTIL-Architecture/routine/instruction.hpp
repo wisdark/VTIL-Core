@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -73,23 +73,25 @@ namespace vtil
 		//
 		bool explicit_volatile = false;
 
+		// Multivariate runtime context.
+		//
+		mutable multivariate context = {};
+
 		// Basic constructor, non-default constructor asserts the constructed
 		// instruction is valid according to the instruction descriptor.
 		//
 		instruction() = default;
 		instruction( const instruction_desc* base,
 					 const std::vector<operand>& operands = {},
-					 vip_t vip = invalid_vip,
 					 bool explicit_volatile = false ) :
-			base( base ), operands( operands ),
-			vip( vip ), explicit_volatile( explicit_volatile )
+			base( base ), operands( operands ), explicit_volatile( explicit_volatile )
 		{
-			fassert( is_valid() );
+			is_valid( true );
 		}
 
 		// Returns whether the instruction is valid or not.
 		//
-		bool is_valid() const;
+		bool is_valid( bool force = false ) const;
 
 		// Makes the instruction explicitly volatile.
 		//
@@ -104,28 +106,19 @@ namespace vtil
 		//
 		bool is_volatile() const { return explicit_volatile || base->is_volatile; }
 
-		// Returns the access size of the instruction.
+		// Returns the access size of the instruction in number of bits.
 		//
-		size_t access_size() const { return operands.empty() ? 0 : operands[ base->access_size_index ].size(); }
+		bitcnt_t access_size() const { return operands.empty() ? 0 : operands[ base->access_size_index ].bit_count(); }
 
-		// Returns the memory address this instruction references.
+		// Returns the memory location this instruction references.
 		//
-		std::pair<register_desc, int64_t> get_mem_loc() const;
+		std::pair<register_desc&, int64_t&> memory_location();
+		std::pair<const register_desc&, const int64_t&> memory_location() const;
 
-		// Checks whether the instruction reads from the given register or not, and
-		// returns [operand index + 1] if a match is found and zero otherwise.
+		// Returns operands with their types zipped for enumeration.
 		//
-		int reads_from( const register_desc& rw ) const;
-
-		// Checks whether the instruction reads from the given register or not, and
-		// returns [operand index + 1] if a match is found and zero otherwise.
-		//
-		int writes_to( const register_desc& rw ) const;
-
-		// Checks whether the instruction reads from the given register or not, and
-		// returns [operand index + 1] if a match is found and zero otherwise.
-		//
-		int overwrites( const register_desc& rw ) const;
+		auto enum_operands() { return zip( operands, base->operand_types ); }
+		auto enum_operands() const { return zip( operands, base->operand_types ); }
 
 		// Conversion to human-readable format.
 		//

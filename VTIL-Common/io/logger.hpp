@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -32,8 +32,8 @@
 #include <cstdlib>
 #include <string>
 #include <mutex>
+#include <functional>
 #include "formatting.hpp"
-#include "../util/critical_section.hpp"
 
 // If inline assembly is supported use it, otherwise rely on intrinsics to emit INT3.
 //
@@ -84,7 +84,7 @@ namespace vtil::logger
 	{
 		// Lock of the stream.
 		//
-		critical_section lock;
+		std::recursive_mutex lock;
 
 		// Whether prints are muted or not.
 		//
@@ -121,16 +121,18 @@ namespace vtil::logger
 		int active;
 		int prev;
 
-		scope_padding( unsigned u )
-			: active( ( state::get()->lock.lock(), 1 ) ),
-			  prev( state::get()->padding )
+		scope_padding( unsigned u ) : active( 1 )
 		{
+			state::get()->lock.lock();
+			prev = state::get()->padding;
 			state::get()->padding += u;
+			state::get()->lock.unlock();
 		}
 
 		void end()
 		{
 			if ( active-- <= 0 ) return;
+			state::get()->lock.lock();
 			state::get()->padding = prev;
 			state::get()->lock.unlock();
 		}
@@ -146,16 +148,18 @@ namespace vtil::logger
 		int active;
 		bool prev;
 
-		scope_verbosity( bool verbose_output )
-			: active( ( state::get()->lock.lock(), 1 ) ),
-			  prev( state::get()->mute )
+		scope_verbosity( bool verbose_output ) : active( 1 )
 		{
+			state::get()->lock.lock();
+			prev = state::get()->mute;
 			state::get()->mute |= !verbose_output;
+			state::get()->lock.unlock();
 		}
 
 		void end()
 		{
 			if ( active-- <= 0 ) return;
+			state::get()->lock.lock();
 			state::get()->mute = prev;
 			state::get()->lock.unlock();
 		}
@@ -177,13 +181,9 @@ namespace vtil::logger
 		//
 		if ( state->mute ) return 0;
 
-		// Set to defualt color.
-		//
-		set_color( CON_DEF );
-		int out_cnt = 0;
-
 		// If we should pad this output:
 		//
+		int out_cnt = 0;
 		if ( state->padding > 0 )
 		{
 			// If it was not carried from previous:
@@ -219,15 +219,55 @@ namespace vtil::logger
 		// If string literal with no parameters, use puts instead.
 		//
 		if ( sizeof...( ps ) == 0 )
-			return out_cnt + fputs( fmt, VTIL_LOGGER_DST );
+			out_cnt += fputs( fmt, VTIL_LOGGER_DST );
 		else
-			return out_cnt + fprintf( VTIL_LOGGER_DST, fmt, format::fix_parameter<params>( std::forward<params>( ps ) )... );
+			out_cnt += fprintf( VTIL_LOGGER_DST, fmt, format::fix_parameter<params>( std::forward<params>( ps ) )... );
+
+		// Reset to defualt color.
+		//
+		set_color( CON_DEF );
+		return out_cnt;
 	}
 	template<console_color color = CON_DEF, typename... params>
 	static int log( const char* fmt, params&&... ps )
 	{
 		return log( color, fmt, std::forward<params>( ps )... );
 	}
+
+	// Prints a warning message.
+	//
+	template<typename... params>
+	static void warning( const char* fmt, params&&... ps )
+	{
+		// Format warning message.
+		//
+		std::string message = format::str(
+			fmt,
+			format::fix_parameter<params>( std::forward<params>( ps ) )...
+		);
+
+		// Acquire the lock.
+		//
+		std::lock_guard _g{ state::get()->lock };
+		
+		// Reset padding.
+		//
+		int old_padding = state::get()->padding;
+		state::get()->padding = 0;
+
+		// Print the warning.
+		//
+		log( CON_YLW, "[!] Warning: %s\n", message );
+
+		// Restore the padding and return.
+		//
+		state::get()->padding = old_padding;
+	}
+
+	// Allows to place a hook onto the error function, this is mainly used for
+	// the python project to avoid crasing the process.
+	//
+	inline std::function<void( const std::string& )> error_hook;
 
 	// Prints an error message and breaks the execution.
 	//
@@ -241,20 +281,17 @@ namespace vtil::logger
 			format::fix_parameter<params>( std::forward<params>( ps ) )...
 		);
 
-		// Error will stop any execution so feel free to ignore any locks.
+		// If there is an active hook, call into it.
 		//
-		new ( &state::get()->lock ) critical_section();
+		if ( error_hook ) error_hook( message );
 
-		// Reset padding and print error message.
+		// Error will stop any execution so feel free to ignore any locks. Print error message.
 		//
-		state::get()->padding = 0;
-		log<CON_RED>( "\n%s\n", message.data() );
+		set_color( CON_RED );
+		fprintf( VTIL_LOGGER_DST, "[*] Error: %s\n", message.c_str() );
 
 		// Break the program. 
-		// 
-#ifndef _DEBUG 
-		exit( EXIT_FAILURE );
-#endif 
+		//
 		impl::noreturn_helper();
 	}
 };

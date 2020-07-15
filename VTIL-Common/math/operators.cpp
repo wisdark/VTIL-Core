@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -25,24 +25,23 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE  
 // POSSIBILITY OF SUCH DAMAGE.        
 //
+#include "../io/logger.hpp"
 #include "operators.hpp"
 #include "../util/mul128.hpp"
 
-#pragma warning(push)
-#pragma warning(disable: 4244)
 namespace vtil::math
 {
     // Calculates the size of the result after after the application of the operator [id] on the operands.
     //
     bitcnt_t result_size( operator_id id, bitcnt_t bcnt_lhs, bitcnt_t bcnt_rhs )
     {
-        static_assert( round_bit_count( bit_index_size ) == bit_index_size, "Bit-index size must be rounded by default." );
-
         switch ( id )
         {
             // - Operators that work with bit-indices.
             //
-            case operator_id::popcnt:         return bit_index_size;
+            case operator_id::popcnt:
+            case operator_id::bitscan_fwd:
+            case operator_id::bitscan_rev:
             case operator_id::bit_count:      return bit_index_size;
 
             // - Unary and parameterized unary-like operators.
@@ -50,11 +49,11 @@ namespace vtil::math
             case operator_id::negate:
             case operator_id::bitwise_not:
             case operator_id::mask:
-            case operator_id::value_if:       return round_bit_count( bcnt_rhs );
+            case operator_id::value_if:       return bcnt_rhs;
             case operator_id::shift_right:
             case operator_id::shift_left:
             case operator_id::rotate_right:
-            case operator_id::rotate_left:    return round_bit_count( bcnt_lhs );
+            case operator_id::rotate_left:    return bcnt_lhs;
 
             // - Boolean operators.           
             //                                
@@ -78,7 +77,7 @@ namespace vtil::math
 
         // - Rest default to maximum operand size.
         //
-        return round_bit_count( std::max( bcnt_lhs, bcnt_rhs ) );
+        return std::max( bcnt_lhs, bcnt_rhs );
     }
 
     // Applies the specified operator [id] on left hand side [lhs] and right hand side [rhs]
@@ -86,6 +85,8 @@ namespace vtil::math
     //
     std::pair<uint64_t, bitcnt_t> evaluate( operator_id id, bitcnt_t bcnt_lhs, uint64_t lhs, bitcnt_t bcnt_rhs, uint64_t rhs )
     {
+        using namespace logger;
+
         // Normalize the input.
         //
         const operator_desc* desc = descriptor_of( id );
@@ -98,6 +99,13 @@ namespace vtil::math
         //
         int64_t& ilhs = ( int64_t& ) lhs;
         int64_t& irhs = ( int64_t& ) rhs;
+        
+        // Handle __cast and __ucast.
+        //
+        if ( id == operator_id::ucast )
+            return { zero_extend( lhs, narrow_cast<bitcnt_t>( rhs ) ), narrow_cast<bitcnt_t>( rhs ) };
+        if ( id == operator_id::cast )
+            return { sign_extend( lhs, narrow_cast<bitcnt_t>( rhs ) ), narrow_cast<bitcnt_t>( rhs ) };
 
         // Calculate the result of the operation.
         //
@@ -130,16 +138,20 @@ namespace vtil::math
                                                         : ( lhs * rhs ) >> bcnt_res;                                break;
             case operator_id::multiply:         result = ilhs * irhs;                                               break;
             case operator_id::umultiply:        result = lhs * rhs;                                                 break;
-            case operator_id::divide:           result = ilhs / irhs;                                               break;
-            case operator_id::udivide:          result = lhs / rhs;                                                 break;
-            case operator_id::remainder:        result = ilhs % irhs;                                               break;
-            case operator_id::uremainder:       result = lhs % rhs;                                                 break;
 
+            case operator_id::divide:           if( irhs == 0 ) result = INT64_MAX, warning("Division by immediate zero (IDIV).");
+                                                else            result = ilhs / irhs;                               break;
+            case operator_id::udivide:          if( rhs == 0 )  result = UINT64_MAX, warning("Division by immediate zero (DIV).");
+                                                else            result = lhs / rhs;                                 break;
+            case operator_id::remainder:        if( irhs == 0 ) result = 0, warning("Division by immediate zero (IREM).");
+                                                else            result = ilhs % irhs;                               break;
+            case operator_id::uremainder:       if( rhs == 0 )  result = 0, warning("Division by immediate zero (REM).");
+                                                else            result = lhs % rhs;                                 break;
             // - Special operators.                                                          
             //                                                                                  
-            case operator_id::cast:             result = ilhs, bcnt_res = rhs;                                      break;
-            case operator_id::ucast:            result = lhs,  bcnt_res = rhs;                                      break;
             case operator_id::popcnt:           result = popcnt( rhs );                                             break;
+            case operator_id::bitscan_fwd:      result = lsb( rhs );                                                break;
+            case operator_id::bitscan_rev:      result = msb( rhs );                                                break;
             case operator_id::bit_test:         result = ( lhs >> rhs ) & 1;                                        break;
             case operator_id::mask:             result = fill( bcnt_rhs );                                          break;
             case operator_id::bit_count:        result = bcnt_rhs;                                                  break;
@@ -183,21 +195,29 @@ namespace vtil::math
         // If invalid operation, return invalid.
         //
         auto* desc = descriptor_of( op );
+        
+        bool known;
         switch ( desc ? desc->operand_count : 0 )
         {
             case 1:
                 if ( rhs.is_valid() )
+                {
+                    known = rhs.is_known();
                     break;
+                }
             case 2:
                 if ( rhs.is_valid() && lhs.is_valid() )
+                {
+                    known = lhs.is_known() && rhs.is_known();
                     break;
+                }
             default:
                 return {};
         }
 
-        // If no unknown bits, redirect to more efficient math::evaluate().
+        // If no unknown bits, redirect to more efficient evaluate().
         //
-        if ( lhs.is_known() && rhs.is_known() )
+        if ( known )
         {
             auto [val, size] = evaluate( op, lhs.size(), lhs.known_one(), rhs.size(), rhs.known_one() );
             return { val, size };
@@ -327,11 +347,18 @@ namespace vtil::math
             // ####################################################################################################################################
             case operator_id::add:
             {
+                    bitcnt_t out_size = std::max( lhs.size(), rhs.size() );
+
+                    // Return unknown if no bits are known from one side.
+                    //
+                    if( lhs.unknown_mask() == lhs.value_mask() ||
+                        rhs.unknown_mask() == rhs.value_mask() )
+                        return bit_vector( out_size );
+
                     // Create the temp holding the new bit vector.
                     //
                     uint64_t known_mask = 0;
                     uint64_t unknown_mask = 0;
-                    bitcnt_t out_size = std::max( lhs.size(), rhs.size() );
 
                     // For each bit in the output size:
                     //
@@ -429,19 +456,25 @@ namespace vtil::math
             case operator_id::ucast:
                 // Get new size from RHS as constant, and resize LHS to be of size [RHS] with zero extension if relevant.
                 //
-                if ( auto new_size = rhs.get() )  return bit_vector( lhs ).resize( *new_size, false );
+                if ( auto new_size = rhs.get() )  return bit_vector( lhs ).resize( narrow_cast<bitcnt_t>( *new_size ), false );
                 else                              unreachable();
 
             case operator_id::cast:
                 // Get new size from RHS as constant, and resize LHS to be of size [RHS] with sign extension if relevant.
                 //
-                if ( auto new_size = rhs.get() )  return bit_vector( lhs ).resize( *new_size, true );
+                if ( auto new_size = rhs.get() )  return bit_vector( lhs ).resize( narrow_cast<bitcnt_t>( *new_size ), true );
                 else                              unreachable();
 
             case operator_id::popcnt:
                 // Cannot be calculated with unknown values, return unknown of expected size.
                 //
-                return bit_vector( popcnt( lhs.known_one() | lhs.unknown_mask() ) ).resize( bit_index_size );
+                return bit_vector( popcnt( rhs.known_one() | rhs.unknown_mask() ) ).resize( bit_index_size );
+
+            case operator_id::bitscan_fwd:
+            case operator_id::bitscan_rev:
+                // Cannot be calculated with unknown values, return unknown of expected size.
+                //
+                return bit_vector( bit_index_size );
 
             case operator_id::bit_test:
                 // If we can get the index being tested as constant, try to evaluate. 
@@ -675,4 +708,3 @@ namespace vtil::math
         unreachable();
     }
 };
-#pragma warning(pop)

@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -26,14 +26,15 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #include "basic_block.hpp"
-#include <vtil/amd64> // TODO: Remove me
+#include <vtil/amd64>
+#include <vtil/arm64>
 
 namespace vtil
 {
 	// Constructor does not exist. Should be created either using
 	// ::begin(...) or ->fork(...).
 	//
-	basic_block* basic_block::begin( vip_t entry_vip )
+	basic_block* basic_block::begin( vip_t entry_vip, architecture_identifier arch_id )
 	{
 		// Caller must provide a valid virtual instruction pointer.
 		//
@@ -46,9 +47,13 @@ namespace vtil
 
 		// Create the routine and assign this block as the entry-point
 		//
-		blk->owner = new routine;
+		blk->owner = new routine{ arch_id };
 		blk->owner->entry_point = blk;
 		blk->owner->explored_blocks[ entry_vip ] = blk;
+
+		// Append the path.
+		//
+		blk->owner->explore_path( nullptr, blk );
 
 		// Return the block
 		//
@@ -85,6 +90,10 @@ namespace vtil
 		//
 		next.push_back( entry );
 		entry->prev.push_back( this );
+
+		// Append the path.
+		//
+		owner->explore_path( this, entry );
 		return result;
 	}
 
@@ -93,16 +102,11 @@ namespace vtil
 	//
 	basic_block* basic_block::label_begin( vip_t vip )
 	{
-		label_stack.emplace_back( stream.size(), vip );
+		label_stack.push_back( vip );
 		return this;
 	}
 	basic_block* basic_block::label_end()
 	{
-		auto [n, vip] = label_stack.back();
-		std::for_each( std::next( stream.begin(), n ), stream.end(), [ v = vip_t( vip ) ]( instruction& ins )
-		{
-			ins.vip = ins.vip == invalid_vip ? v : ins.vip;
-		} );
 		label_stack.pop_back();
 		return this;
 	}
@@ -140,6 +144,23 @@ namespace vtil
 	//
 	basic_block::iterator basic_block::insert( const const_iterator& it_const, instruction&& ins )
 	{
+		// Validate instruction.
+		//
+		ins.is_valid( true );
+
+		// Validate registers are of matching architecture.
+		//
+		for ( auto& op : ins.operands )
+		{
+			if ( op.is_register() && op.reg().is_physical() && !op.reg().is_special() )
+				fassert( op.reg().architecture == owner->arch_id );
+		}
+
+		// If label stack is not empty and instruction has an invalid vip, use the last label pushed.
+		//
+		if ( !label_stack.empty() && ins.vip == invalid_vip )
+			ins.vip = label_stack.back();
+
 		// Drop const qualifier of the iterator, since we are in a non-const 
 		// qualified member function, this qualifier is unnecessary.
 		//
@@ -188,30 +209,22 @@ namespace vtil
 
 		// If instruction writes to SP, reset the queued stack pointer.
 		//
-		if ( ins.writes_to( REG_SP ) )
+		for ( auto [op, type] : ins.enum_operands() )
 		{
-			shift_sp( -ins.sp_offset, false, it );
-			for ( auto it2 = it; !it2.is_end(); it2++ )
-				it2->sp_index++;
-			sp_index++;
-			ins.sp_reset = true;
+			if ( type >= operand_type::write && op.reg().is_stack_pointer() )
+			{
+				shift_sp( -ins.sp_offset, false, it );
+				for ( auto it2 = it; !it2.is_end(); it2++ )
+					it2->sp_index++;
+				sp_index++;
+				ins.sp_reset = true;
+				break;
+			}
 		}
 
 		// Append the instruction to the stream.
 		//
 		return { this, stream.emplace( it, std::move( ins ) ) };
-	}
-
-	// Helpers for the allocation of unique temporary registers.
-	//
-	register_desc basic_block::tmp( bitcnt_t size )
-	{
-		return register_desc
-		{
-			register_local,
-			last_temporary_index++,
-			size
-		};
 	}
 
 	// Queues a stack shift.
@@ -254,19 +267,15 @@ namespace vtil
 			//
 			it->sp_offset += offset;
 
-			// If instruction reads from SP:
+			// If memory operation:
 			//
-			if ( it->reads_from( REG_SP ) )
+			if ( it->base->accesses_memory() )
 			{
-				// If LDR|STR with memory base SP:
+				// If base is stack pointer, add the offset.
 				//
-				if ( it->base->accesses_memory() && it->operands[ it->base->memory_operand_index ].reg().is_stack_pointer() )
-				{
-					// Assert the offset operand is an immediate and shift the offset as well.
-					//
-					fassert( it->operands[ it->base->memory_operand_index + 1 ].is_immediate() );
-					it->operands[ it->base->memory_operand_index + 1 ].imm().i64 += offset;
-				}
+				auto [base, off] = it->memory_location();
+				if ( base.is_stack_pointer() )
+					off += offset;
 			}
 		}
 
@@ -280,9 +289,17 @@ namespace vtil
 	//
 	basic_block* basic_block::vemits( const std::string& assembly )
 	{
-		auto res = keystone::assemble( assembly );
-		fassert( !res.empty() );
-		for ( uint8_t byte : res )
+		std::vector<uint8_t> bytes;
+
+		switch ( owner->arch_id )
+		{
+			case architecture_amd64: bytes = amd64::assemble( assembly ); break;
+			case architecture_arm64: bytes = arm64::assemble( assembly ); break;
+			default: unreachable();
+		}
+
+		fassert( !bytes.empty() );
+		for ( uint8_t byte : bytes )
 			vemit( byte );
 		return this;
 	}

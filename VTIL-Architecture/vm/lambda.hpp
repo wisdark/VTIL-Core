@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -54,6 +54,7 @@ namespace vtil
 		//
 		struct
 		{
+			impl::strip_object_t<decltype( &vm_interface::size_register )> size_register = {};
 			impl::strip_object_t<decltype( &vm_interface::read_register )> read_register = {};
 			impl::strip_object_t<decltype( &vm_interface::read_memory )> read_memory = {};
 			impl::strip_object_t<decltype( &vm_interface::write_register )> write_register = {};
@@ -63,25 +64,31 @@ namespace vtil
 
 		// Declare the overrides redirecting to the callbacks.
 		//
-		symbolic::expression read_register( const register_desc& desc ) override 
+		bitcnt_t size_register( const register_desc& desc ) override 
+		{
+			return hooks.size_register
+				? hooks.size_register( desc )
+				: vm_base::size_register( desc );
+		}
+		symbolic::expression::reference read_register( const register_desc& desc ) override
 		{
 			return hooks.read_register 
 				? hooks.read_register( desc ) 
 				: vm_base::read_register( desc );
 		}
-		symbolic::expression read_memory( const symbolic::expression& pointer, size_t byte_count ) override 
+		symbolic::expression::reference read_memory( const symbolic::expression::reference& pointer, size_t byte_count ) override
 		{ 
 			return hooks.read_memory 
 				? hooks.read_memory( pointer, byte_count ) 
 				: vm_base::read_memory( pointer, byte_count );
 		}
-		void write_register( const register_desc& desc, symbolic::expression value ) override 
+		void write_register( const register_desc& desc, symbolic::expression::reference value ) override
 		{ 
 			return hooks.write_register 
 				? hooks.write_register( desc, std::move( value ) ) 
 				: vm_base::write_register( desc, std::move( value ) );
 		}
-		void write_memory( const symbolic::expression& pointer, symbolic::expression value ) override
+		void write_memory( const symbolic::expression::reference& pointer, symbolic::expression::reference value ) override
 		{
 			return hooks.write_memory
 				? hooks.write_memory( pointer, std::move( value ) )

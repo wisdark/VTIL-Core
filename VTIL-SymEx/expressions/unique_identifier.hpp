@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -38,14 +38,6 @@ namespace vtil::symbolic
 	//
 	struct unique_identifier
 	{
-		// Identifier stored as variant.
-		//
-		variant value;
-
-		// String cast of the stored type.
-		//
-		std::function<std::string( const variant& )> string_cast;
-
 		// Three-way comperator of the stored type.
 		//
 		int( *compare_value )( const unique_identifier&, const unique_identifier& );
@@ -53,6 +45,14 @@ namespace vtil::symbolic
 		// Hash of the identifier.
 		//
 		hash_t hash_value;
+
+		// String cast of the stored type.
+		//
+		mutable std::variant<std::string, std::string(*)( const variant& )> name_getter;
+
+		// Identifier stored as variant.
+		//
+		variant value;
 
 		// Default constructor/copy/move.
 		//
@@ -77,7 +77,7 @@ namespace vtil::symbolic
 
 			// String cast returns value as is.
 			//
-			string_cast = [ ] ( const variant& v ) { return v.get<std::string>(); };
+			name_getter = [ ] ( const variant& v ) { return v.get<std::string>(); };
 
 			// Set comparison operator.
 			//
@@ -98,19 +98,19 @@ namespace vtil::symbolic
 			//
 			if ( !name.empty() )
 			{
-				string_cast = [ name ] ( auto& ) { return name; };
+				name_getter = name;
 			}
 			// Else, try to convert to string via ::to_string or std::to_string.
 			//
 			else if constexpr ( format::has_string_conversion_v<T> )
 			{
-				string_cast = [ ] ( const variant& v ) { return format::as_string( v.get<T>() ); };
+				name_getter = [ ] ( const variant& v ) { return format::as_string( v.get<T>() ); };
 			}
 			// If all failed, assert we have a valid hasher.
 			//
 			else
 			{
-				string_cast = [ ] ( const variant& v ) { return "[object]"; };
+				name_getter = [ ] ( const variant& v ) { return "[object]"; };
 				static_assert( !std::is_same_v<hasher_t, void>, "Unique identifier was not provided a hasher nor a way to acquire the name." );
 			}
 
@@ -118,6 +118,9 @@ namespace vtil::symbolic
 			//
 			compare_value = [ ] ( const unique_identifier& a, const unique_identifier& b )
 			{
+				if ( a.hash_value < b.hash_value ) return -1;
+				if ( a.hash_value > b.hash_value ) return +1;
+
 				auto& ta = a.get<T>();
 				auto& tb = b.get<T>();
 				if ( ta == tb ) return  0;
@@ -152,14 +155,13 @@ namespace vtil::symbolic
 		// Conversion to human-readable format.
 		// - Note: Will cache the return value in string_cast as lambda capture if non-const-qualified.
 		//
-		std::string to_string();
-		std::string to_string() const;
+		const std::string& to_string() const;
 
 		// Cast to bool checks if valid or not.
 		//
 		operator bool() const { return ( bool ) value; }
 
-		// Simple comparison operators.
+		// Simple comparison operators, will go through hash first.
 		//
 		bool operator==( const unique_identifier& o ) const;
 		bool operator<( const unique_identifier& o ) const;

@@ -9,9 +9,9 @@
 // 2. Redistributions in binary form must reproduce the above copyright   
 //    notice, this list of conditions and the following disclaimer in the   
 //    documentation and/or other materials provided with the distribution.   
-// 3. Neither the name of mosquitto nor the names of its   
-//    contributors may be used to endorse or promote products derived from   
-//    this software without specific prior written permission.   
+// 3. Neither the name of VTIL Project nor the names of its contributors
+//    may be used to endorse or promote products derived from this software 
+//    without specific prior written permission.   
 //    
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE   
@@ -33,16 +33,147 @@
 
 // Allow expression::reference to be used with expression type directly as operable.
 //
-namespace vtil::symbolic { struct expression; };
-namespace vtil::math { template<> struct resolve_alias<shared_reference<symbolic::expression>> { using type = symbolic::expression; }; };
+namespace vtil::symbolic { struct expression; struct expression_reference; };
+namespace vtil::math { template<> struct resolve_alias<symbolic::expression_reference> { using type = symbolic::expression; }; };
 
 namespace vtil::symbolic
 {
+	struct expression;
+
+	// Expression delegates used to implement copyless write detection 
+	// in case the reference is already owning.
+	//
+	struct expression_delegate
+	{
+		shared_reference<expression>& ref;
+		bool dirty;
+
+		expression_delegate( shared_reference<expression>& ref ) : ref( ref ), dirty( false ) {}
+		expression_delegate( const expression_delegate& ) = delete;
+		expression_delegate& operator=( const expression_delegate& ) = delete;
+
+		template<typename T, std::enable_if_t<!std::is_same_v<std::decay_t<T>, expression_delegate>, int> = 0>
+		expression_delegate& operator=( T&& value )
+		{
+			ref = std::forward<T>( value );
+			dirty = true;
+			return *this;
+		}
+
+		const expression* operator->() const { return ref.get(); }
+		const expression& operator*() const { return *ref.get(); }
+		expression* operator+() { dirty = 1; return ref.own(); }
+	};
+
+	// Expression references.
+	//
+	struct expression_reference : shared_reference<expression>
+	{
+		// Declare hasher and equivalence checker.
+		//
+		struct hasher
+		{
+			size_t operator()( const expression_reference& value ) const noexcept { return value.hash(); }
+		};
+		struct if_equal
+		{
+			bool operator()( const expression_reference& v1,
+							 const expression_reference& v2 ) const noexcept { return v1.equals( *v2 ); }
+		};
+		struct if_identical
+		{
+			bool operator()( const expression_reference& v1,
+							 const expression_reference& v2 ) const noexcept { return v1.is_identical( *v2 ); }
+		};
+
+		// Forward operators and constructor.
+		//
+		template<typename... Tx>
+		expression_reference( Tx&&... args ) 
+			: shared_reference( std::forward<Tx>( args )...) {}
+
+		using shared_reference::operator bool;
+		using shared_reference::operator*;
+		using shared_reference::operator+;
+		using shared_reference::operator->;
+
+		// Basic comparison operators are redirected to the pointer type.
+		//
+		bool operator<( const shared_reference& o ) const { return combined_value < o.combined_value; }
+		bool operator==( const shared_reference& o ) const { return combined_value == o.combined_value; }
+		bool operator<( const expression_reference& o ) const { return combined_value < o.combined_value; }
+		bool operator==( const expression_reference& o ) const { return combined_value == o.combined_value; }
+
+		// Implement some helpers to conditionally copy.
+		//
+		expression_reference& make_lazy();
+		expression_reference& simplify( bool prettify = false, bool* out = nullptr );
+		expression_reference& resize( bitcnt_t new_size, bool signed_cast = false, bool no_explicit = false );
+		[[nodiscard]] expression_reference make_lazy() const;
+		[[nodiscard]] expression_reference simplify( bool prettify = false, bool* out = nullptr ) const;
+		[[nodiscard]] expression_reference resize( bitcnt_t new_size, bool signed_cast = false, bool no_explicit = false ) const;
+
+		// Forward declared redirects for internal use cases.
+		//
+		hash_t hash() const;
+		bool is_simple() const;
+		void update( bool auto_simplify );
+
+		// Equivalence check.
+		//
+		bool equals( const expression& exp ) const;
+		bool is_identical( const expression& exp ) const;
+
+		// Implemented for sinkhole use.
+		//
+		bitcnt_t size() const;
+
+		// Implemented for logger use.
+		//
+		std::string to_string() const;
+
+		// Transforms the whole tree according to the functor, much more optimized compared to expression::transform.
+		//
+		template<typename T>
+		bool transform_single( const T& func, bool auto_simplify, bool do_update );
+		template<typename T>
+		[[nodiscard]] std::pair<bool, expression_reference> transform_single( const T& func, bool auto_simplify, bool do_update ) const
+		{
+			auto copy = make_copy( *this );
+			return { copy.transform_single( func, auto_simplify, do_update ), std::move( copy ) };
+		}
+
+		template<typename T>
+		bool transform_rec( const T& func, bool bottom, bool auto_simplify );
+		template<typename T>
+		[[nodiscard]] std::pair<bool, expression_reference> transform_rec( const T& func, bool bottom, bool auto_simplify ) const
+		{
+			auto copy = make_copy( *this );
+			return { copy.transform_rec( func, bottom, auto_simplify ), std::move( copy ) };
+		}
+
+		// Implement original transform signature.
+		//
+		template<typename T>
+		expression_reference& transform( const T& func, bool bottom = false, bool auto_simplify = true )
+		{
+			transform_rec( func, bottom, auto_simplify );
+			return *this;
+		}
+		template<typename T>
+		expression_reference transform( const T& func, bool bottom = false, bool auto_simplify = true ) const
+		{
+			return std::move( make_copy( *this ).transform( func, bottom, auto_simplify ) );
+		}
+	};
+
 	// Expression descriptor.
 	//
 	struct expression : math::operable<expression>
 	{
-		using reference = shared_reference<expression>;
+		using delegate =       expression_delegate;
+		using reference =      expression_reference;
+		using weak_reference = weak_reference<expression>;
 
 		// If symbolic variable, the unique identifier that it maps to.
 		//
@@ -72,14 +203,18 @@ namespace vtil::symbolic
 		// be cases where it already has passed it and this flag was not set. Albeit those cases will most 
 		// likely not cause performance issues due to the caching system.
 		//
-		bool simplify_hint = false;
+		mutable bool simplify_hint = false;
+
+		// Disables implicit auto-simplification for the expression if is set.
+		//
+		bool is_lazy = false;
 
 		// Default constructor and copy/move.
 		//
 		expression() = default;
 		expression( expression&& exp ) = default;
 		expression( const expression & exp ) = default;
-		expression& operator=( expression&& exp )= default;
+		expression& operator=( expression&& exp ) = default;
 		expression& operator=( const expression & exp ) = default;
 
 		// Construct from constants.
@@ -163,11 +298,21 @@ namespace vtil::symbolic
 		// Resizes the expression, if not constant, expression::resize will try to propagate 
 		// the operation as deep as possible.
 		//
-		expression& resize( bitcnt_t new_size, bool signed_cast = false );
+		expression& resize( bitcnt_t new_size, bool signed_cast = false, bool no_explicit = false );
+		expression resize( bitcnt_t new_size, bool signed_cast = false, bool no_explicit = false ) const
+		{ 
+			if ( size() == new_size ) return *this;
+			return std::move( clone().resize( new_size, signed_cast, no_explicit ) );
+		}
 
 		// Simplifies and optionally prettifies the expression.
 		//
 		expression& simplify( bool prettify = false );
+		expression simplify( bool prettify = false ) const 
+		{ 
+			if ( simplify_hint && !prettify ) return *this;
+			return std::move( clone().simplify( prettify ) );
+		}
 
 		// Returns whether the given expression is identical to the current instance.
 		// - Note: basic comparison opeators should not be overloaded since expression is of type
@@ -185,15 +330,45 @@ namespace vtil::symbolic
 		// this avoids copying of the entire tree and any simplifier calls so is preferred
 		// over *transform(...).get().
 		//
-		using eval_lookup_helper_t = std::function<std::optional<uint64_t>( const unique_identifier& )>;
-		math::bit_vector evaluate( const eval_lookup_helper_t& lookup = {} ) const;
+		template<typename T>
+		math::bit_vector evaluate( T&& lookup ) const
+		{
+			// If value is known, return as is.
+			//
+			if ( value.is_known() ) 
+				return value;
+		
+			// If variable:
+			//
+			if ( is_variable() )
+			{
+				// If lookup helper passed and succesfully finds the value, use as is.
+				//
+				if ( std::optional<uint64_t> res = lookup( uid ) )
+					return { *res, size() };
+			
+				// Otherwise return unknown.
+				//
+				return value;
+			}
+
+			// Try to evaluate the result and return.
+			//
+			math::bit_vector result = {};
+			if ( is_unary() )
+				result = math::evaluate_partial( op, {},                      rhs->evaluate( lookup ) );
+			else if ( is_binary() )
+				result = math::evaluate_partial( op, lhs->evaluate( lookup ), rhs->evaluate( lookup ) );
+			return result;
+		}
 		
 		// Implement math::operable::get with evaluator.
 		//
+		static constexpr auto default_eval = [ ] ( const unique_identifier& v ) { return std::nullopt; };
 		template<typename type>
-		std::optional<type> get( const eval_lookup_helper_t& lookup = {} ) const { return evaluate( lookup ).get<type>(); }
+		std::optional<type> get() const { return evaluate( default_eval ).get<type>(); }
 		template<bool as_signed = false, typename type = std::conditional_t<as_signed, int64_t, uint64_t>>
-		std::optional<type> get( const eval_lookup_helper_t& lookup = {} ) const { return evaluate( lookup ).get<type>(); }
+		std::optional<type> get() const { return evaluate( default_eval ).get<type>(); }
 
 		// Enumerates the whole tree.
 		//
@@ -215,33 +390,19 @@ namespace vtil::symbolic
 			return *this;
 		}
 
-		// Transforms the whole tree according to the functor.
-		//
-		template<typename T>
-		expression& transform( const T& fn, bool bottom = true, bool auto_simplify = true )
-		{
-			if ( bottom )
-			{
-				if ( rhs ) ( +rhs )->transform( fn, bottom, auto_simplify );
-				if ( lhs ) ( +lhs )->transform( fn, bottom, auto_simplify );
-				update( auto_simplify );
-				fn( *this );
-				update( auto_simplify );
-			}
-			else
-			{
-				fn( *this );
-				update( auto_simplify );
-				if ( rhs ) ( +rhs )->transform( fn, bottom, auto_simplify );
-				if ( lhs ) ( +lhs )->transform( fn, bottom, auto_simplify );
-				update( auto_simplify );
-			}
-			return *this;
-		}
-
 		// Simple way to invoke copy constructor using a pointer.
 		//
 		expression clone() const { return *this; }
+
+		// Disables simplifications for the expression (and it's future parents) 
+		// when set, can be reset by ::simplify().
+		//
+		expression& make_lazy() { is_lazy = true; return *this; }
+		expression make_lazy() const
+		{
+			if ( is_lazy ) return *this;
+			return std::move( clone().make_lazy() );
+		}
 	};
 
 	// Boxed expression solves the aforementioned problem by creating a type that can be 
@@ -270,6 +431,127 @@ namespace vtil::symbolic
 		//
 		bool operator==( const boxed_expression& o ) const { return is_identical( o ); }
 		bool operator!=( const boxed_expression& o ) const { return !is_identical( o ); }
-		bool operator<( const boxed_expression& o ) const { return hash() < o.hash(); }
+		bool operator<( const boxed_expression& o )  const { return hash() < o.hash(); }
 	};
+
+
+	// Transforms the whole tree according to the functor, much more optimized compared to expression::transform.
+	//
+	template<typename T>
+	bool expression_reference::transform_single( const T& func, bool auto_simplify, bool do_update )
+	{
+		// Save original hash.
+		//
+		hash_t hash_0 = hash();
+
+		// Invoke via delegate.
+		//
+		expression_delegate del = { *this };
+		func( del );
+
+		// If function did not modify the value:
+		//
+		if ( !del.dirty )
+		{
+			// If simple already or no auto simplifiy set, return false.
+			//
+			if ( !auto_simplify || is_simple() )
+				return false;
+
+			// Invoke simplifier and return its state as "did-change".
+			//
+			bool simplified;
+			simplify( false, &simplified );
+			return simplified;
+		}
+
+		// Invoke update if not done already.
+		//
+		if ( hash_0 != hash() && do_update )
+			update( auto_simplify );
+		// If done but we still need to auto-simplify:
+		//
+		else if ( auto_simplify && !is_simple() )
+			simplify();
+
+		// Report changed.
+		//
+		return true;
+	}
+	template<typename T>
+	bool expression_reference::transform_rec( const T& func, bool bottom, bool auto_simplify )
+	{
+		const auto transform_children = [ & ] ()
+		{
+			// If RHS exists:
+			//
+			bool changed = false;
+			if ( auto& rhs = get()->rhs )
+			{
+				// Recursively transform RHS, if changed:
+				//
+				if ( auto [crhs, nrhs] = rhs.transform_rec( func, bottom, auto_simplify ); crhs )
+				{
+					// Set changed, own self and update node, transform LHS if exists.
+					//
+					auto owning = own();
+					changed = true;
+					owning->rhs = nrhs;
+					if ( auto& lhs = owning->lhs )
+						( bool ) lhs.transform_rec( func, bottom, auto_simplify );
+				}
+				// If not, but LHS exists:
+				//
+				else if ( auto& lhs = get()->lhs )
+				{
+					// Recursively transform LHS, if changed:
+					//
+					if ( auto [clhs, nlhs] = lhs.transform_rec( func, bottom, auto_simplify ); clhs )
+					{
+						// Set changed, own self and update node.
+						//
+						changed = true;
+						own()->lhs = nlhs;
+					}
+				}
+			}
+			return changed;
+		};
+
+		if ( bottom )
+		{
+			// Transform all children.
+			//
+			bool changed = transform_children();
+
+			// If changed, update the expression.
+			//
+			if( changed )
+				own()->update( auto_simplify );
+			
+			// Transform self and return.
+			//
+			return changed | transform_single( func, auto_simplify, true );
+		}
+		else
+		{
+			// Transform self without updating if auto_simplify is not set.
+			//
+			bool changed = transform_single( func, auto_simplify, false );
+
+			// Transform all children, if any of them were changed or if
+			// auto simplify was not set causing us to delay the update
+			// together with a change in current node, update self.
+			//
+			if ( transform_children() | ( changed && !auto_simplify ) )
+			{
+				own()->update( auto_simplify );
+				changed = true;
+			}
+
+			// Return final state.
+			//
+			return changed;
+		}
+	}
 };
