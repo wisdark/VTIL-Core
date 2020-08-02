@@ -41,7 +41,7 @@ namespace vtil
 	// Type we use to describe virtual instruction pointer in.
 	//
 	using vip_t = uint64_t;
-	static constexpr vip_t invalid_vip = -1;
+	static constexpr vip_t invalid_vip = ~0;
 
 	// This structure is used to describe instances of VTIL instructions in
 	// the instruction stream.
@@ -75,19 +75,17 @@ namespace vtil
 
 		// Multivariate runtime context.
 		//
-		mutable multivariate context = {};
+		multivariate<instruction> context = {};
 
 		// Basic constructor, non-default constructor asserts the constructed
 		// instruction is valid according to the instruction descriptor.
 		//
-		instruction() = default;
-		instruction( const instruction_desc* base,
-					 const std::vector<operand>& operands = {},
-					 bool explicit_volatile = false ) :
-			base( base ), operands( operands ), explicit_volatile( explicit_volatile )
-		{
-			is_valid( true );
-		}
+		instruction() {}
+		template<typename... Tx> requires( ( ConvertibleTo<Tx&&, operand> && ... )  )
+		instruction( const instruction_desc* base, Tx&&... operands ) 
+			: base( base ), operands( { operand( std::forward<Tx>( operands ) )... } ) { is_valid( true ); }
+		instruction( const instruction_desc* base, std::initializer_list<operand> operands ) 
+			: base( base ), operands( operands.begin(), operands.end() ) { is_valid( true ); }
 
 		// Returns whether the instruction is valid or not.
 		//

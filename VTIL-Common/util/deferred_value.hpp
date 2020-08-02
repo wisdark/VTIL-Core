@@ -38,7 +38,7 @@ namespace vtil
 	// type-erased functions nor does any heap allocation.
 	//
 	template<typename Ret, typename Fn, typename... Tx>
-	struct deferred_value
+	struct deferred_result
 	{
 		// Has the functor and its arguments.
 		//
@@ -59,10 +59,6 @@ namespace vtil
 		//
 		using known_value = std::decay_t<Ret>;
 
-		// Declares invalid.
-		//
-		struct null_value {};
-
 		// Current value.
 		//
 		std::optional<future_value> future;
@@ -70,17 +66,17 @@ namespace vtil
 
 		// Null constructor.
 		//
-		deferred_value() {}
-		deferred_value( std::nullopt_t ) {}
+		deferred_result() {}
+		deferred_result( std::nullopt_t ) {}
 
 		// Construct by functor and its arguments.
 		//
-		deferred_value( Fn&& functor, Tx&&... arguments )
-			: future( future_value{ .functor = std::forward<Fn>( functor ), .arguments = { std::forward<Tx>( arguments )... } } ) {}
+		deferred_result( Fn functor, wrap_t<Tx>... arguments )
+			: future( future_value{ .functor = std::move( functor ), .arguments = { std::move( arguments )... } } ) {}
 
 		// Constructor by known result.
 		//
-		deferred_value( known_value v ) : current( std::move( v ) ) {}
+		deferred_result( known_value v ) : current( std::move( v ) ) {}
 
 		// Returns a reference to the final value stored.
 		//
@@ -97,9 +93,9 @@ namespace vtil
 			//
 			return *current;
 		}
-		const known_value& get() const 
+		const known_value& get() const
 		{ 
-			return make_mutable( *this ).get(); 
+			return make_mutable( this )->get(); 
 		}
 
 		// Simple wrappers to check state.
@@ -110,7 +106,7 @@ namespace vtil
 
 		// Assigns a value, discarding the pending invocation if relevant.
 		//
-		known_value& operator=( known_value new_value ) 
+		known_value& operator=( known_value new_value )
 		{ 
 			current = std::move( new_value );
 			return *current;
@@ -118,14 +114,65 @@ namespace vtil
 
 		// Syntax sugars.
 		//
-		auto& operator*() { return get(); }
-		auto* operator->() { return &get(); }
-		auto& operator*() const { return get(); }
-		auto* operator->() const { return &get(); }
+		operator known_value&() { return get(); }
+		known_value& operator*() { return get(); }
+		known_value* operator->() { return &get(); }
+		operator const known_value&() const { return get(); }
+		const known_value& operator*() const { return get(); }
+		const known_value* operator->() const { return &get(); }
 	};
 
 	// Declare deduction guide.
 	//
 	template<typename Fn, typename... Tx>
-	deferred_value( Fn&&, Tx&&... ) -> deferred_value<decltype(std::declval<Fn&&>()(std::declval<Tx&&>()...)), Fn, Tx...>;
+	deferred_result( Fn, Tx... ) -> deferred_result<decltype(std::declval<Fn>()(std::declval<Tx>()...)), Fn, Tx...>;
+
+	// Type erased view of deferred result.
+	//
+	template<typename T>
+	struct deferred_value
+	{
+		// View only holds a pointer to the deferred_value, erasing the type.
+		//
+		using getter_type = T& (*) ( void* );
+		void* ctx;
+		getter_type getter;
+
+		// Construction by value, store pointer in context and use type-casting lambda as getter.
+		//
+		deferred_value( T& value )
+		{
+			ctx = &value;
+			getter = [ ] ( void* p ) -> T& { return *( T* ) p; };
+		}
+		// -- Lifetime must be guaranteed by the caller.
+		deferred_value( T&& value ) : deferred_value( ( T& ) value ) {}
+
+		// Construction by deferred result.
+		//
+		template<typename... Tx>
+		deferred_value( const deferred_result<T, Tx...>& result )
+		{
+			ctx = ( void* ) &result;
+			getter = [ ] ( void* self ) -> T&
+			{
+				return ( ( deferred_result<T, Tx...>* ) self )->get();
+			};
+		}
+
+		// Construction by type + functor, type erase context and store as is.
+		//
+		deferred_value( const void* ctx, getter_type getter )
+			: ctx( ( void* ) ctx ), getter( getter ) {}
+
+		// Simple wrapping ::get() and cast to reference.
+		//
+		T& get() const { return getter( ctx ); }
+		operator T& () const { return get(); }
+	};
+
+	// Declare deduction guide.
+	//
+	template<typename Ret, typename Fn, typename... Tx>
+	deferred_value( deferred_result<Ret, Fn, Tx...> )->deferred_value<Ret>;
 };

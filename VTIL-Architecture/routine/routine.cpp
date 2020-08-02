@@ -37,14 +37,14 @@ namespace vtil
 		if ( auto it = path_cache[ 0 ].find( src ); it != path_cache[ 0 ].end() )
 			if ( auto it2 = it->second.find( dst ); it2 != it->second.end() )
 				return it2->second;
-		return make_default<path_set>();
+		return static_default;
 	}
 	const path_set& routine::get_path_bwd( const basic_block* src, const basic_block* dst ) const
 	{
 		if ( auto it = path_cache[ 1 ].find( dst ); it != path_cache[ 1 ].end() )
 			if ( auto it2 = it->second.find( src ); it2 != it->second.end() )
 				return it2->second;
-		return make_default<path_set>();
+		return static_default;
 	}
 
 	// Simple helpers to check if (forward/backward) path from src to dst exists.
@@ -147,6 +147,66 @@ namespace vtil
 		explore_path( nullptr, entry_point );
 	}
 
+	// Finds a block in the list, get variant will throw if none found.
+	//
+	basic_block* routine::find_block( vip_t vip ) const
+	{
+		std::lock_guard g{ this->mutex };
+
+		auto it = explored_blocks.find( vip );
+		if ( it == explored_blocks.end() ) return nullptr;
+		return it->second;
+	}
+	basic_block* routine::get_block( vip_t vip ) const
+	{
+		std::lock_guard g{ this->mutex };
+
+		basic_block* block = find_block( vip );
+		fassert( block );
+		return block;
+	}
+
+	// Tries creating a new block bound to this routine.
+	// - Mimics ::emplace, returns an additional bool reporting whether it's found or not.
+	//
+	std::pair<basic_block*, bool> routine::create_block( vip_t vip, basic_block* src )
+	{
+		std::lock_guard g{ this->mutex };
+
+		// Try inserting into the map:
+		//
+		auto [it, inserted] = explored_blocks.emplace( vip, nullptr );
+		basic_block*& block = it->second;
+		if ( inserted )
+		{
+			// Create the block and set entry if none set.
+			//
+			block = new basic_block( this, vip );
+			if ( !entry_point ) entry_point = block;
+		}
+
+		// Fix links and explore the path.
+		//
+		if ( src )
+		{
+			fassert( src->owner == this );
+		
+			bool new_next = std::find( src->next.begin(), src->next.end(), block ) == src->next.end();
+			bool new_prev = inserted || std::find( block->prev.begin(), block->prev.end(), src ) == block->prev.end();
+
+			if ( new_next ) src->next.emplace_back( block );
+			if ( new_prev ) block->prev.emplace_back( src );
+
+			if ( new_next || new_prev )
+				explore_path( src, block );
+		}
+		else
+		{
+			explore_path( nullptr, block );
+		}
+		return { block, inserted };
+	}
+
 	// Deletes a block, should have no links or links must be nullified (no back-links).
 	//
 	void routine::delete_block( basic_block* block )
@@ -154,13 +214,6 @@ namespace vtil
 		// Acquire the routine mutex.
 		//
 		std::lock_guard g{ this->mutex };
-
-		// Assert that links are nullified.
-		//
-		for ( auto nxt : block->next )
-			fassert( std::find( nxt->prev.begin(), nxt->prev.end(), block ) == nxt->prev.end() );
-		for ( auto nxt : block->prev )
-			fassert( std::find( nxt->next.begin(), nxt->next.end(), block ) == nxt->next.end() );
 
 		// Enumerate both forwards and backwards caches.
 		//
@@ -211,14 +264,16 @@ namespace vtil
 		delete block;
 	}
 
-
-	// Returns the number of basic blocks and instructions in the routine.
+	// Provide basic statistics about the complexity of the routine.
 	//
 	size_t routine::num_blocks() const
 	{
 		// Acquire the routine mutex.
 		//
 		std::lock_guard g{ this->mutex }; 
+
+		// Return the number of blocks.
+		//
 		return explored_blocks.size();
 	}
 	size_t routine::num_instructions() const
@@ -234,67 +289,63 @@ namespace vtil
 			n += blk->size();
 		return n;
 	}
+	size_t routine::num_branches() const
+	{
+		// Acquire the routine mutex.
+		//
+		std::lock_guard g{ this->mutex };
+
+		// Sum up paths in every block.
+		//
+		size_t n = 0;
+		for ( auto& [_, blk] : explored_blocks )
+			n += blk->next.size();
+		return n;
+	}
 
 	// Routine structures free all basic blocks they own upon their destruction.
 	//
 	routine::~routine()
 	{
-		for ( auto [vip, block] : explored_blocks )
-			delete block;
+		// Acquire the routine mutex.
+		//
+		std::lock_guard g{ this->mutex };
+
+		for ( auto& [vip, block] : explored_blocks )
+		{
+			block->next.clear();
+			block->prev.clear();
+			delete std::exchange( block, nullptr );
+		}
 	}
 
 	// Clones the routine and it's every block.
 	//
 	routine* routine::clone() const
 	{
-		routine* copy = new routine{ this->arch_id };
-
 		// Acquire the routine mutex.
 		//
 		std::lock_guard g{ this->mutex };
 
-		// Copy the context data.
+		// Copy the routine.
 		//
-		copy->context = this->context;
-
-		// Copy calling conventions.
+		auto copy = new routine( *this );
+		
+		// Clone each block referenced.
 		//
-		copy->routine_convention = this->routine_convention;
-		copy->subroutine_convention = this->subroutine_convention;
-		copy->spec_subroutine_conventions = this->spec_subroutine_conventions;
-
-		// Copy internally tracked stats.
-		//
-		copy->local_opt_count = this->local_opt_count.load();
-		copy->last_internal_id = this->last_internal_id.load();
-
-		// Create a recursive clone helper and call into it with entry point.
-		//
-		const std::function<basic_block*(const basic_block*)> reference_block = 
-			[ & ] ( const basic_block* src ) -> basic_block*
+		for ( auto& [vip, block] : copy->explored_blocks )
 		{
-			// If already indexed, return as is.
-			//
-			basic_block*& index = copy->explored_blocks[ src->entry_vip ];
-			if ( index ) return index;
-			
-			// Copy the block and fix it's references.
-			//
-			index = new basic_block{ *src };
-			index->owner = copy;
-			
-			for ( basic_block*& next : index->next )
-				next = reference_block( next );
-			for ( basic_block*& prev : index->prev )
-				prev = reference_block( prev );
-			return index;
-		};
-		copy->entry_point = reference_block( this->entry_point );
-
-		// Iterate each explored block to make sure we've covered all.
+			block = new basic_block( *block );
+			block->owner = copy;
+		}
+		
+		// Fix block links.
 		//
-		for ( auto& [vip, block] : this->explored_blocks )
-			fassert( copy->explored_blocks[ vip ] == reference_block( block ) );
+		for ( auto& [vip, block] : copy->explored_blocks )
+			for ( auto& list : { &block->next, &block->prev } )
+				for ( auto& entry : *list )
+					entry = copy->get_block( entry->entry_vip );
+		copy->entry_point = copy->get_block( entry_point->entry_vip );
 
 		// Copy path cache.
 		//
@@ -311,11 +362,12 @@ namespace vtil
 					path_set new_set;
 					std::transform(
 						set.begin(), set.end(),
-						std::inserter( new_set, new_set.begin() ), reference_block
+						std::inserter( new_set, new_set.begin() ),
+						[ & ] ( const basic_block* block ) { return copy->get_block( block->entry_vip ); }
 					);
-					map_l2.emplace( reference_block( k2 ), std::move( new_set ) );
+					map_l2.emplace( copy->get_block( k2->entry_vip ), std::move( new_set ) );
 				}
-				map_l1.emplace( reference_block( k1 ), std::move( map_l2 ) );
+				map_l1.emplace( copy->get_block( k1->entry_vip ), std::move( map_l2 ) );
 			}
 			map = map_l1;
 		}

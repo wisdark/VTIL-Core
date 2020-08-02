@@ -34,13 +34,6 @@
 #include <vtil/utility>
 #include "../arch/register_desc.hpp"
 
-// [Configuration]
-// Determine the number of xpointers we use to estimate overlapping.
-//
-#ifndef VTIL_SYM_PTR_XPTR_KEYS
-	#define VTIL_SYM_PTR_XPTR_KEYS 4
-#endif
-
 namespace vtil::symbolic
 {
 	// Declare a symbolic pointer to be used within symbolic execution context.
@@ -50,15 +43,7 @@ namespace vtil::symbolic
 		// List of pointer bases we consider to be restricted, can be expanded by user
 		// but defaults to image base and stack pointer.
 		//
-		static std::set<register_desc> restricted_bases;
-
-		// Declares the symbolic pointer weak.
-		//
-		struct make_weak
-		{
-			pointer operator()( pointer&& p ) { return ( p.strength = INT32_MIN, p ); }
-			pointer operator()( pointer p ) { return ( p.strength = INT32_MIN, p ); }
-		};
+		inline static std::set<register_desc> restricted_bases = { REG_SP, REG_IMGBASE };
 
 		// The symbolic expression that will represent the virtual address 
 		// if resolved to an immediate value.
@@ -68,18 +53,14 @@ namespace vtil::symbolic
 		// Special flags of the registers the base contains.
 		//
 		uint64_t flags = 0;
-		
-		// Strength of the pointer. -1 when it has unknowns, +1 on fully known value.
-		//
-		int32_t strength = 0;
 
-		// X-Pointers are N-64-bit estimations of the actual virtual adresss.
+		// X values cached from expression.
 		//
-		std::array<uint64_t, VTIL_SYM_PTR_XPTR_KEYS> xpointer;
+		std::array<uint64_t, VTIL_SYMEX_XVAL_KEYS> xvalues;
 
 		// Construct null pointer.
 		//
-		pointer() { xpointer.fill( 0 ); }
+		pointer() {}
 		pointer( std::nullptr_t ) : pointer() {}
 
 		// Construct from symbolic expression.
@@ -120,6 +101,6 @@ namespace vtil::symbolic
 
 		// Define reduction.
 		//
-		REDUCE_TO( flags, strength, xpointer, base ? ( boxed_expression& ) *base : make_default<boxed_expression>() );
+		REDUCE_TO( flags, base ? ( boxed_expression& ) *base : make_static<boxed_expression>() );
 	};
 };

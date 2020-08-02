@@ -29,16 +29,6 @@
 
 namespace vtil::symbolic::directive
 {
-	// Constructor for directive representing the result of an unary operator.
-	//
-	instance::instance( math::operator_id op, const instance& e1 ) 
-		: rhs( e1 ), op( op ) {}
-
-	// Constructor for directive representing the result of a binary operator.
-	//
-	instance::instance( const instance& e1, math::operator_id op, const instance& e2 ) 
-		: lhs( e1 ), rhs( e2 ), op( op ) {}
-
 	// Enumerates each unique variable.
 	//
 	void instance::enum_variables( const std::function<void( const instance& )>& fn, std::unordered_set<const char*>* s ) const
@@ -66,12 +56,12 @@ namespace vtil::symbolic::directive
 
 		// Handle expression operators.
 		//
-		if ( auto desc = math::descriptor_of( op ) )
-			return desc->to_string( lhs ? lhs->to_string() : "", rhs->to_string() );
-
+		if ( uint8_t( op ) < directive_op_desc::begin_id )
+			return math::descriptor_of( op ).to_string( lhs ? lhs->to_string() : "", rhs->to_string() );
 		// Handle directive operators.
 		//
-		return directive_op_desc{ op }.to_string( lhs ? lhs->to_string() : "", rhs->to_string() );
+		else
+			return directive_op_desc{ op }.to_string( lhs ? lhs->to_string() : "", rhs->to_string() );
 	}
 
 	// Simple equivalence check.

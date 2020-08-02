@@ -26,50 +26,49 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #if _WIN64
+	#define _CRT_SECURE_NO_WARNINGS
 	#define WIN32_LEAN_AND_MEAN
 	#define NOMINMAX
 	#include <Windows.h>
 #endif
 #include "logger.hpp"
+#include <cstdlib>
 
 namespace vtil::logger
 {
 	// Global logger state.
 	//
-	static state global_state = {};
-
-	// Gets the global logger state.
-	//
-	state* state::get()
+	logger_state_t::logger_state_t()
 	{
-		if ( !global_state.initialized )
-		{
 #if _WIN64
-			SetConsoleOutputCP( CP_UTF8 );
+		SetConsoleOutputCP( CP_UTF8 );
+		ansi_escape_codes = std::getenv( "GITLAB_CI" ) != nullptr;
 #endif
-			global_state.initialized = true;
-		}
-
-		return &global_state;
 	}
 
 	// Changes color where possible.
 	//
 	void set_color( console_color color )
 	{
-#if _WIN64
-		SetConsoleTextAttribute( GetStdHandle( STD_OUTPUT_HANDLE ), color );
-#else
-		switch ( color )
+		if ( logger_state.ansi_escape_codes )
 		{
-			case CON_BRG: printf( "\x1b[37m" ); break;
-			case CON_YLW: printf( "\x1b[33m" ); break;
-			case CON_PRP: printf( "\x1b[35m" ); break;
-			case CON_RED: printf( "\x1b[31m" ); break;
-			case CON_CYN: printf( "\x1b[36m" ); break;
-			case CON_GRN: printf( "\x1b[32m" ); break;
-			case CON_BLU: printf( "\x1b[34m" ); break;
-			case CON_DEF: printf( "\x1b[0m" ); break;
+			switch ( color )
+			{
+				case CON_BRG: printf( "\x1b[37m" ); break;
+				case CON_YLW: printf( "\x1b[33m" ); break;
+				case CON_PRP: printf( "\x1b[35m" ); break;
+				case CON_RED: printf( "\x1b[31m" ); break;
+				case CON_CYN: printf( "\x1b[36m" ); break;
+				case CON_GRN: printf( "\x1b[32m" ); break;
+				case CON_BLU: printf( "\x1b[34m" ); break;
+				case CON_DEF:
+				default:      printf( "\x1b[0m" );  break;
+			}
+		}
+#if _WIN64
+		else
+		{
+			SetConsoleTextAttribute( GetStdHandle( STD_OUTPUT_HANDLE ), color );
 		}
 #endif
 	}

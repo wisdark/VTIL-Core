@@ -33,6 +33,7 @@
 #include <numeric>
 #include "../util/reducable.hpp"
 #include "../io/asserts.hpp"
+#include "../util/type_helpers.hpp"
 
 // Declare the type we will used for bit lenghts of data.
 // - We are using int instead of char since most operations will end up casting
@@ -45,40 +46,52 @@ namespace vtil::math
 {
     // Narrows the given type in a safe manner.
     //
-    template<typename T, typename T2>
-    static T narrow_cast( T2 o )
+    template<Integral T, Integral T2>
+    static constexpr T narrow_cast( T2 o )
     {
+        static_assert( sizeof( T ) <= sizeof( T2 ), "Narrow cast is extending." );
+
         if constexpr ( std::is_signed_v<T2> ^ std::is_signed_v<T> )
             dassert( 0 <= o && o <= std::numeric_limits<T>::max() );
         else
             dassert( std::numeric_limits<T>::min() <= o && o <= std::numeric_limits<T>::max() );
+
         return ( T ) o;
     }
 
     // Extracts the sign bit from the given value.
     //
-    template<typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+    template<Integral T>
     static constexpr bool sgn( T type ) { return bool( type >> ( ( sizeof( T ) * 8 ) - 1 ) ); }
 
-    // Implement platform-indepdenent popcnt/msb/lsb.
+    // Implement platform-indepdenent bitwise operations.
     //
-    static bitcnt_t popcnt( uint64_t x )
+    static constexpr bitcnt_t popcnt( uint64_t x )
     {
+        // Optimized using intrinsic on MSVC, Clang should be smart enough to do this on its own.
+        //
 #ifdef _MSC_VER
-        return ( bitcnt_t ) __popcnt64( x );
-#else
+        if ( !std::is_constant_evaluated() )
+        {
+            return ( bitcnt_t ) __popcnt64( x );
+        }
+#endif
         bitcnt_t count = 0;
         for ( bitcnt_t i = 0; i < 64; i++, x >>= 1 )
             count += ( bitcnt_t ) ( x & 1 );
         return count;
-#endif
     }
-    static bitcnt_t msb( uint64_t x )
+    static constexpr bitcnt_t msb( uint64_t x )
     {
+        // Optimized using intrinsic on MSVC, Clang should be smart enough to do this on its own.
+        //
 #ifdef _MSC_VER
-        unsigned long idx;
-        return _BitScanReverse64( &idx, x ) ? ( bitcnt_t ) idx + 1 : 0;
-#else
+        if ( !std::is_constant_evaluated() )
+        {
+            unsigned long idx = 0;
+            return _BitScanReverse64( &idx, x ) ? ( bitcnt_t ) idx + 1 : 0;
+        }
+#endif
         // Return index + 1 on success:
         //
         for ( bitcnt_t i = 63; i >= 0; i-- )
@@ -87,14 +100,18 @@ namespace vtil::math
         // Zero otherwise.
         //
         return 0;
-#endif
     }
-    static bitcnt_t lsb( uint64_t x )
+    static constexpr bitcnt_t lsb( uint64_t x )
     {
+        // Optimized using intrinsic on MSVC, Clang should be smart enough to do this on its own.
+        //
 #ifdef _MSC_VER
-        unsigned long idx;
-        return _BitScanForward64( &idx, x ) ? ( bitcnt_t ) idx + 1 : 0;
-#else
+        if ( !std::is_constant_evaluated() )
+        {
+            unsigned long idx = 0;
+            return _BitScanForward64( &idx, x ) ? ( bitcnt_t ) idx + 1 : 0;
+        }
+#endif
         // Return index + 1 on success:
         //
         for ( bitcnt_t i = 0; i <= 63; i++ )
@@ -103,19 +120,54 @@ namespace vtil::math
         // Zero otherwise.
         //
         return 0;
+    }
+    static constexpr bool bit_test( uint64_t value, bitcnt_t n )
+    {
+        // Optimized using intrinsic on MSVC, Clang should be smart enough to do this on its own.
+        //
+#ifdef _MSC_VER
+        if ( !std::is_constant_evaluated() )
+            return _bittest64( ( long long* ) &value, n );
 #endif
+        return value & ( 1ull << n );
+    }
+    static constexpr bool bit_set( uint64_t& value, bitcnt_t n )
+    {
+        // Optimized using intrinsic on MSVC, Clang should be smart enough to do this on its own.
+        //
+#ifdef _MSC_VER
+        if ( !std::is_constant_evaluated() )
+            return _bittestandset64( ( long long* ) &value, n );
+#endif
+        uint64_t mask = ( 1ull << ( n & 63 ) );
+        bool is_set = value & mask;
+        value |= mask;
+        return is_set;
+    }
+    static constexpr bool bit_reset( uint64_t& value, bitcnt_t n )
+    {
+        // Optimized using intrinsic on MSVC, Clang should be smart enough to do this on its own.
+        //
+#ifdef _MSC_VER
+        if ( !std::is_constant_evaluated() )
+            return _bittestandreset64( ( long long* ) &value, n );
+#endif
+        uint64_t mask = ( 1ull << ( n & 63 ) );
+        bool is_set = value & mask;
+        value &= ~mask;
+        return is_set;
     }
 
     // Used to find a bit with a specific value in a linear memory region.
     //
     static constexpr size_t bit_npos = ( size_t ) -1;
-    
     template<typename T>
-    static size_t find_bit( const T* begin, const T* end, bool value )
+    static constexpr size_t bit_find( const T* begin, const T* end, bool value, bool reverse = false )
     {
-        static constexpr size_t bit_size = sizeof( T ) * 8;
+        constexpr size_t bit_size = sizeof( T ) * 8;
         using uint_t = std::make_unsigned_t<T>;
         using int_t =  std::make_signed_t<T>;
+        const auto scanner = reverse ? msb : lsb;
 
         // Generate the xor mask, if we're looking for 1, -!1 will evaluate to 0,
         // otherwise -!0 will evaluate to 0xFF.. in order to flip all bits.
@@ -129,7 +181,7 @@ namespace vtil::math
         {
             // If we could find the bit in the block:
             //
-            if ( bitcnt_t i = math::lsb( *it ^ xor_mask ) )
+            if ( bitcnt_t i = scanner( *it ^ xor_mask ) )
             {
                 // Return after adjusting the index.
                 //
@@ -142,16 +194,40 @@ namespace vtil::math
         return bit_npos;
     }
 
+    // Used to enumerate each set bit in the integer.
+    //
+    template<typename T>
+    static constexpr void bit_enum( uint64_t mask, T&& fn, bool reverse = false )
+    {
+        const auto scanner = reverse ? msb : lsb;
+        while ( true )
+        {
+            // If scanner returns 0, break.
+            //
+            bitcnt_t idx = scanner( mask );
+            if ( idx == 0 ) return;
+
+            // Adjust the index, reset the bit and invoke the callback.
+            //
+            bit_reset( mask, --idx );
+            fn( idx );
+        }
+    }
+
     // Generate a mask for the given variable size and offset.
     //
     static constexpr uint64_t fill( bitcnt_t bit_count, bitcnt_t bit_offset = 0 )
     {
+        // If bit count is not a positive value, return zero.
+        //
+        if ( bit_count <= 0 ) return 0;
+
         // Determine shift direction and magnitude.
         // - Could have used calculated [sgn] instead of second comparison but
         //   this makes it easier for the compiler to optimize into cmovcc.
         //
-        bool is_shr = sgn( bit_offset );
-        bitcnt_t abs_shift = ( bit_offset >= 0 ) ? bit_offset : -bit_offset;
+        bool is_shl = bit_offset >= 0;
+        bitcnt_t abs_shift = is_shl ? bit_offset : -bit_offset;
 
         // Shifting beyond the variable size cause unexpected (mod) behaviour
         // on x64, check the shift count first.
@@ -164,8 +240,8 @@ namespace vtil::math
         
         // Shift accordingly.
         //
-        if( is_shr ) return abs_value >> abs_shift;
-        else         return abs_value << abs_shift;
+        if( is_shl ) return abs_value << abs_shift;
+        else         return abs_value >> abs_shift;
     }
 
     // Fills the bits of the uint64_t type after the given offset with the sign bit.
@@ -176,92 +252,90 @@ namespace vtil::math
     {
         // The XOR operation with 0b1 flips the sign bit, after which when we subtract
         // one to create 0xFF... for (1) and 0x00... for (0).
-        // - We could have also done [s *= ~0ull], but it's slower since:
-        //    1) XOR ~= [#μop: 1, latency: 1]
-        //    2) SUB ~= [#μop: 1, latency: 1]
-        //    vs
-        //    1) MUL ~= [#μop: 3, latency: 3]
         //
         return ( ( sign ^ 1 ) - 1 ) << bit_offset;
     }
 
     // Extends the given integral type into uint64_t or int64_t.
     //
-    template<typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-    static auto imm_extend( T imm )
+    template<Integral T>
+    static constexpr auto imm_extend( T imm )
     {
-        if constexpr ( std::is_signed_v<T> )
-            return ( int64_t ) imm;
-        else
-            return ( uint64_t ) imm;
+        if constexpr ( std::is_signed_v<T> ) return ( int64_t ) imm;
+        else                                 return ( uint64_t ) imm;
     }
+
+    // Implement the jump-table based, compiler optimized sign/zero extension.
+    //
+    namespace impl
+    {
+        // For all N except 0 / 1 / 64:
+        //
+        template<auto N>
+        struct integer_resizer
+        {
+            static_assert( N <= 63, "Invalid table generation." );
+
+            union zx_t { uint64_t input; struct { unsigned long long result : N; }; };
+            union sx_t { uint64_t input; struct { signed   long long result : N; }; };
+            
+            static constexpr uint64_t zx( uint64_t value ) { return zx_t{ value }.result; }
+            static constexpr int64_t  sx( uint64_t value ) { return sx_t{ value }.result; }
+        };
+        // N = 64 should return as is.
+        //
+        template<>
+        struct integer_resizer<64>
+        {
+            static constexpr uint64_t zx( uint64_t value ) { return value; }
+            static constexpr int64_t  sx( uint64_t value ) { return value; }
+        };
+        // N = 1 should not perform sign extension as it's intended for boolean use.
+        //
+        template<>
+        struct integer_resizer<1>
+        {
+            static constexpr uint64_t zx( uint64_t value ) { return value & 1; }
+            static constexpr int64_t  sx( uint64_t value ) { return value & 1; }
+        };
+        // N = 0 should throw upon invokation.
+        //
+        template<>
+        struct integer_resizer<0>
+        {
+            static uint64_t zx( uint64_t value )           { unreachable(); }
+            static int64_t  sx( uint64_t value )           { unreachable(); }
+        };
+
+        // Generate entire table.
+        //
+        static constexpr std::array zx_table = make_visitor_series<65, integer_resizer>( [ ] ( auto tag ) { return &decltype( tag )::type::zx; } );
+        static constexpr std::array sx_table = make_visitor_series<65, integer_resizer>( [ ] ( auto tag ) { return &decltype( tag )::type::sx; } );
+    };
 
     // Zero extends the given integer.
     //
-    static uint64_t zero_extend( uint64_t value, bitcnt_t bcnt_src )
+    static constexpr uint64_t zero_extend( uint64_t value, bitcnt_t bcnt_src )
     {
-        // Use simple casts where possible.
-        //
-        switch ( bcnt_src )
-        {
-            case 1: return value & 1;
-            case 8: return  *( uint8_t* ) &value;
-            case 16: return *( uint16_t* ) &value;
-            case 32: return *( uint32_t* ) &value;
-            case 64: return *( uint64_t* ) &value;
-        }
-
-        // Make sure source size is non-zero.
-        //
-        fassert( bcnt_src != 0 );
-
-        // Mask the value.
-        //
-        value &= fill( bcnt_src );
-        return value;
+        dassert( 0 < bcnt_src && bcnt_src <= 64 );
+        return impl::zx_table[ bcnt_src ]( value );
     }
 
     // Sign extends the given integer.
     //
-    static int64_t sign_extend( uint64_t value, bitcnt_t bcnt_src )
+    static constexpr int64_t sign_extend( uint64_t value, bitcnt_t bcnt_src )
     {
-        // Use simple casts where possible.
-        //
-        switch ( bcnt_src )
-        {
-            case 1: return value & 1;             // Booleans cannot have sign bits by definition.
-            case 8: return  *( int8_t* ) &value;
-            case 16: return *( int16_t* ) &value;
-            case 32: return *( int32_t* ) &value;
-            case 64: return *( int64_t* ) &value;
-        }
-
-        // Make sure source size is non-zero.
-        //
-        fassert( bcnt_src != 0 );
-
-        // Extract sign bit.
-        //
-        uint64_t sign = ( value >> ( bcnt_src - 1 ) ) & 1;
-
-        // Mask the value.
-        //
-        value &= fill( bcnt_src );
-
-        // Extend the sign bit.
-        // - Small trick is used here to avoid branches.
-        //
-        sign = ( ( sign ^ 1 ) - 1 ) << bcnt_src;
-        return value | sign;
+        dassert( 0 < bcnt_src && bcnt_src <= 64 );
+        return impl::sx_table[ bcnt_src ]( value );
     }
 
     // Return value from bit-vector lookup where the result can be either unknown or constant 0/1.
     //
     enum class bit_state : int8_t
     {
-        zero = -1,
+        zero =    -1,
         unknown = 0,
-        one = +1,
+        one =     +1,
     };
 
     // Bit-vector holding 0 to 64 bits of value with optional unknowns.
@@ -336,7 +410,7 @@ namespace vtil::math
 
         // Extends or shrinks the the vector.
         //
-        bit_vector& resize( bitcnt_t new_size, bool signed_cast = false )
+        constexpr bit_vector& resize( bitcnt_t new_size, bool signed_cast = false )
         {
             fassert( 0 < new_size && new_size <= 64 );
 

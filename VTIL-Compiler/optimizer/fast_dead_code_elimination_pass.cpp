@@ -26,7 +26,6 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #include "fast_dead_code_elimination_pass.hpp"
-#include <vtil/query>
 #include <vtil/utility>
 #include "../common/auxiliaries.hpp"
 
@@ -111,7 +110,7 @@ namespace vtil::optimizer
 
 			// If volatile, continue.
 			//
-			if ( !ins.is_volatile())
+			if ( !ins.is_volatile() )
 			{
 				// For every operand in this instruction...
 				//
@@ -195,12 +194,12 @@ namespace vtil::optimizer
 	{
 		size_t counter = 0;
 
-		if ( blk->stream.empty())
+		if ( blk->empty() )
 			return 0;
 
 		// Remove all semantic nop.
 		//
-		for ( auto it = blk->begin(); it != blk->end(); )
+		for ( auto it = blk->begin(); !it.is_end(); )
 		{
 			if ( !it->is_volatile() && is_semantic_nop( *it ))
 			{
@@ -337,7 +336,7 @@ namespace vtil::optimizer
 		// Purge simplifier cache since block iterators are invalided thus cache may fail.
 		//
 		if ( counter != 0 )
-			symbolic::purge_simplifier_cache();
+			symbolic::purge_simplifier_state();
 
 		return counter;
 	}

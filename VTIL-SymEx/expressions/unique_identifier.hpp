@@ -89,7 +89,7 @@ namespace vtil::symbolic
 
 		// Construct from any other type.
 		//
-		template<typename T, typename hasher_t = hasher<>,
+		template<typename T, typename hasher_t = std::hash<T>,
 			// Must not be an array or [const unique_identifier&].
 			std::enable_if_t<!std::is_same_v<T, unique_identifier> && !std::extent_v<T>, int> = 0>
 			unique_identifier( const T& v, std::string&& name = "" )
@@ -102,7 +102,7 @@ namespace vtil::symbolic
 			}
 			// Else, try to convert to string via ::to_string or std::to_string.
 			//
-			else if constexpr ( format::has_string_conversion_v<T> )
+			else if constexpr ( StringConvertible<T> )
 			{
 				name_getter = [ ] ( const variant& v ) { return format::as_string( v.get<T>() ); };
 			}
@@ -118,11 +118,8 @@ namespace vtil::symbolic
 			//
 			compare_value = [ ] ( const unique_identifier& a, const unique_identifier& b )
 			{
-				if ( a.hash_value < b.hash_value ) return -1;
-				if ( a.hash_value > b.hash_value ) return +1;
-
-				auto& ta = a.get<T>();
-				auto& tb = b.get<T>();
+				const T& ta = a.get<T>();
+				const T& tb = b.get<T>();
 				if ( ta == tb ) return  0;
 				if ( ta < tb )  return -1;
 				else            return +1;

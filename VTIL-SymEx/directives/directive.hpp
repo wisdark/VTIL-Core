@@ -30,6 +30,7 @@
 #include <vtil/utility>
 #include <type_traits>
 #include <unordered_set>
+#include "expression_signature.hpp"
 
 namespace vtil::symbolic::directive
 {
@@ -105,16 +106,16 @@ namespace vtil::symbolic::directive
 
         // Default constructor / move / copy.
         //
-        directive_op_desc() = default;
-        directive_op_desc( directive_op_desc&& ) = default;
-        directive_op_desc( const directive_op_desc& ) = default;
-        directive_op_desc& operator=( directive_op_desc&& ) = default;
-        directive_op_desc& operator=( const directive_op_desc& ) = default;
+        constexpr directive_op_desc() = default;
+        constexpr directive_op_desc( directive_op_desc&& ) = default;
+        constexpr directive_op_desc( const directive_op_desc& ) = default;
+        constexpr directive_op_desc& operator=( directive_op_desc&& ) = default;
+        constexpr directive_op_desc& operator=( const directive_op_desc& ) = default;
 
         // Construct from tagged enum and math::operator_id.
         //
         constexpr directive_op_desc( _tag i ) : value( i ) {}
-        directive_op_desc( math::operator_id op ) : value( _tag( ( uint8_t ) op - begin_id ) ) { fassert( min < value && value < max ); }
+        constexpr directive_op_desc( math::operator_id op ) : value( _tag( ( uint8_t ) op - begin_id ) ) { fassert( min < value && value < max ); }
 
         // Conversion back to math::operator_id and integer.
         //
@@ -197,6 +198,14 @@ namespace vtil::symbolic::directive
         reference lhs = {};
         reference rhs = {};
 
+        // Number of nodes, cumilatively calculated.
+        //
+        size_t num_nodes = 0;
+
+        // Signature of the directive for each possible size.
+        //
+        std::array<expression_signature, 64> signatures = {};
+
         // Default/copy/move constructors.
         //
         instance() {};
@@ -207,18 +216,32 @@ namespace vtil::symbolic::directive
 
         // Variable constructor.
         //
-        template<typename T = uint64_t, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-        instance( T value ) : operable( int64_t( value ) ) {}
+        template<Integral T = uint64_t>
+        instance( T v, bitcnt_t _discarded_bit_count = 0 ) : operable( ( int64_t ) v , 64 ), num_nodes( 1 )
+        {
+            for ( auto [out, idx] : zip( signatures, iindices ) )
+                out = { make_copy( value ).resize( math::narrow_cast<bitcnt_t>( idx + 1 ) ) };
+        }
         instance( const char* id, int lookup_index, matching_type mtype = match_any ) : 
-            id( id ), lookup_index( lookup_index ), mtype( mtype ) { }
+            id( id ), lookup_index( lookup_index ), mtype( mtype ), num_nodes( 1 ) {}
 
         // Constructor for directive representing the result of an unary operator.
         //
-        instance( math::operator_id _op, const instance& e1 );
+        instance( math::operator_id op, const instance& e1 ) :
+            rhs( e1 ), op( op ), num_nodes( e1.num_nodes + 1 )
+        {
+            for ( auto [out, rhs] : zip( signatures, e1.signatures ) )
+                out = { op, rhs };
+        }
 
         // Constructor for directive representing the result of a binary operator.
         //
-        instance( const instance& e1, math::operator_id _op, const instance& e2 );
+        instance( const instance& e1, math::operator_id op, const instance& e2 ) :
+            lhs( e1 ), rhs( e2 ), op( op ), num_nodes( e1.num_nodes + e2.num_nodes + 1 )
+        {
+            for ( auto [lhs, out, rhs] : zip( e1.signatures, signatures, e2.signatures ) )
+                out = { lhs, op, rhs };
+        }
 
         // Enumerates each unique variable.
         //

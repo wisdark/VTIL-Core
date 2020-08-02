@@ -26,48 +26,60 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #pragma once
-#include <stdint.h>
+#include <vtil/math>
+#include <vtil/utility>
+#include <vtil/io>
 #include <array>
 
-namespace vtil
+namespace vtil::symbolic
 {
-	// Initialize default random seed from __TIME__ macro.
+	// This class allows O(1) approximation of tree-matching by storing a 
+	// compressed signature.
 	//
-	static constexpr uint64_t crandom_default_seed = ([]()
+	struct expression_signature : reducable<expression_signature>
 	{
-		uint64_t value = 0xa0d82d3adc00b109;
-		for ( char c : __TIME__ )
-			value = ( value ^ c ) * 0x100000001B3;
-		return value;
-	} )();
+		// Signature itself.
+		//
+		std::array<uint64_t, 3> signature;
 
-	// Linear congruential generator using the constants from Numerical Recipes.
-	//
-	static constexpr uint64_t lce_64( uint64_t& value )
-	{
-		return ( value = 1664525 * value + 1013904223 );
-	}
+		// Signature hash.
+		//
+		hash_t hash_value;
+		
+		// Declare constructors.
+		//
+		expression_signature() {}
+		expression_signature( const math::bit_vector& value );
+		expression_signature( math::operator_id op, const expression_signature& rhs );
+		expression_signature( const expression_signature& lhs, math::operator_id op, const expression_signature& rhs );
 
-	// Generates a single u64 random number,  optionally skipping the first N numbers based on the offset given.
-	//
-	static constexpr uint64_t make_crandom( size_t offset = 0 )
-	{
-		uint64_t value = crandom_default_seed;
-		while ( offset-- != 0 ) lce_64( value );
-		return lce_64( value );
-	}
+		// Default copy/move.
+		//
+		expression_signature( expression_signature&& ) = default;
+		expression_signature( const expression_signature& ) = default;
+		expression_signature& operator=( expression_signature&& ) = default;
+		expression_signature& operator=( const expression_signature& ) = default;
+		
+		// Shinks to a single 64-bit integer.
+		//
+		uint64_t shrink() const;
+		
+		// Checks if RHS can match into LHS.
+		//
+		bool can_match( const expression_signature& o ) const
+		{
+			for ( auto [a, b] : zip( signature, o.signature ) )
+				if ( ( a & b ) != b )
+					return false;
+			return true;
+		}
 
-	// Generates N u64 random numbers, optionally skipping the first N numbers based on the offset given.
-	//
-	template<size_t... I>
-	static constexpr std::array<size_t, sizeof...( I )> make_crandom_n( size_t offset, std::index_sequence<I...> )
-	{
-		uint64_t value = offset ? make_crandom( offset - 1 ) : crandom_default_seed;
-		return { lce_64( ( I, value ) )... };
-	}
-	template<size_t N>
-	static constexpr auto make_crandom_n( size_t offset = 0 )
-	{
-		return make_crandom_n( offset, std::make_index_sequence<N>{} );
-	}
+		// Custom hasher.
+		//
+		hash_t hash() const { return hash_value; }
+		
+		// Declare reduction.
+		//
+		REDUCE_TO( signature );
+	};
 };

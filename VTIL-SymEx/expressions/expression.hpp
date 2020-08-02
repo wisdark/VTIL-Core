@@ -30,6 +30,14 @@
 #include <vtil/utility>
 #include <set>
 #include "unique_identifier.hpp"
+#include "../directives/expression_signature.hpp"
+
+// [Configuration]
+// Determine the number of x value keys we use to estimate values.
+//
+#ifndef VTIL_SYMEX_XVAL_KEYS
+	#define VTIL_SYMEX_XVAL_KEYS 4
+#endif
 
 // Allow expression::reference to be used with expression type directly as operable.
 //
@@ -171,9 +179,10 @@ namespace vtil::symbolic
 	//
 	struct expression : math::operable<expression>
 	{
-		using delegate =       expression_delegate;
-		using reference =      expression_reference;
-		using weak_reference = weak_reference<expression>;
+		using delegate =           expression_delegate;
+		using reference =          expression_reference;
+		using weak_reference =     weak_reference<expression>;
+		using uid_relation_table = std::vector<std::pair<expression::weak_reference, expression::weak_reference>>;
 
 		// If symbolic variable, the unique identifier that it maps to.
 		//
@@ -199,6 +208,10 @@ namespace vtil::symbolic
 		//
 		hash_t hash_value = {};
 
+		// Signature of the expression.
+		//
+		expression_signature signature = {};
+
 		// Whether expression passed the simplifier already or not, note that this is a hint and there may 
 		// be cases where it already has passed it and this flag was not set. Albeit those cases will most 
 		// likely not cause performance issues due to the caching system.
@@ -219,7 +232,7 @@ namespace vtil::symbolic
 
 		// Construct from constants.
 		//
-		template<typename T = uint64_t, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+		template<Integral T = uint64_t>
 		expression( T value, bitcnt_t bit_count = sizeof( T ) * 8 ) : operable( value, bit_count ), simplify_hint( true ) { update( false ); }
 
 		// Constructor for symbolic variables.
@@ -229,11 +242,11 @@ namespace vtil::symbolic
 		// Constructor for expressions.
 		//
 		expression( math::operator_id op, const reference& rhs ) : operable(), op( op ), rhs( rhs ) { update( true ); }
-		expression( math::operator_id op, reference&& rhs ) : operable(), op( op ), rhs( std::move( rhs ) ) { update( true ); }
+		expression( math::operator_id op, reference&& rhs      ) : operable(), op( op ), rhs( std::move( rhs ) ) { update( true ); }
 		expression( const reference& lhs, math::operator_id op, const reference& rhs ) : operable(), op( op ), lhs( lhs ), rhs( rhs ) { update( true ); }
-		expression( reference&& lhs, math::operator_id op, const reference& rhs) : operable(), op( op ), lhs( std::move( lhs ) ), rhs( rhs ) { update( true ); }
-		expression( const reference& lhs, math::operator_id op, reference&& rhs ) : operable(), op( op ), lhs( lhs ), rhs( std::move( rhs ) ) { update( true ); }
-		expression( reference&& lhs, math::operator_id op, reference&& rhs ) : operable(), op( op ), lhs( std::move( lhs ) ), rhs( std::move( rhs ) ) { update( true ); }
+		expression( reference&& lhs,      math::operator_id op, const reference& rhs ) : operable(), op( op ), lhs( std::move( lhs ) ), rhs( rhs ) { update( true ); }
+		expression( const reference& lhs, math::operator_id op, reference&& rhs      ) : operable(), op( op ), lhs( lhs ), rhs( std::move( rhs ) ) { update( true ); }
+		expression( reference&& lhs,      math::operator_id op, reference&& rhs      ) : operable(), op( op ), lhs( std::move( lhs ) ), rhs( std::move( rhs ) ) { update( true ); }
 
 		// Alternate "constructors" for internal use for the sake of having control over auto-simplification of user-reaching expressions.
 		//
@@ -260,14 +273,14 @@ namespace vtil::symbolic
 
 		// Wrapper around math::descriptor_of()
 		//
-		const math::operator_desc* get_op_desc() const { return math::descriptor_of( op ); };
+		const math::operator_desc& get_op_desc() const { return math::descriptor_of( op ); };
 
 		// Helpers to determine the type of the expression.
 		//
 		bool is_variable() const { return uid; }
 		bool is_expression() const { return op != math::operator_id::invalid; }
-		bool is_unary() const { return is_expression() && get_op_desc()->operand_count == 1; }
-		bool is_binary() const { return is_expression() && get_op_desc()->operand_count == 2; }
+		bool is_unary() const { return is_expression() && get_op_desc().operand_count == 1; }
+		bool is_binary() const { return is_expression() && get_op_desc().operand_count == 2; }
 		bool is_valid() const { return is_expression() || is_variable() || is_constant(); }
 		explicit operator bool() const { return is_valid(); }
 
@@ -299,20 +312,10 @@ namespace vtil::symbolic
 		// the operation as deep as possible.
 		//
 		expression& resize( bitcnt_t new_size, bool signed_cast = false, bool no_explicit = false );
-		expression resize( bitcnt_t new_size, bool signed_cast = false, bool no_explicit = false ) const
-		{ 
-			if ( size() == new_size ) return *this;
-			return std::move( clone().resize( new_size, signed_cast, no_explicit ) );
-		}
 
 		// Simplifies and optionally prettifies the expression.
 		//
 		expression& simplify( bool prettify = false );
-		expression simplify( bool prettify = false ) const 
-		{ 
-			if ( simplify_hint && !prettify ) return *this;
-			return std::move( clone().simplify( prettify ) );
-		}
 
 		// Returns whether the given expression is identical to the current instance.
 		// - Note: basic comparison opeators should not be overloaded since expression is of type
@@ -325,6 +328,15 @@ namespace vtil::symbolic
 		//   match the operators operands and uids one to one.
 		//
 		bool equals( const expression& other ) const;
+
+		// Returns whether the given expression is matching the current instance, if so returns
+		// the UID relation table, otherwise returns nullopt.
+		//
+		std::optional<uid_relation_table> match_to( const expression& other, bool same_depth ) const;
+
+		// Calculates the x values.
+		//
+		std::array<uint64_t, VTIL_SYMEX_XVAL_KEYS> xvalues() const;
 
 		// Evaluates the expression invoking the callback passed for unknown variables,
 		// this avoids copying of the entire tree and any simplifier calls so is preferred
@@ -390,19 +402,14 @@ namespace vtil::symbolic
 			return *this;
 		}
 
-		// Simple way to invoke copy constructor using a pointer.
-		//
-		expression clone() const { return *this; }
-
 		// Disables simplifications for the expression (and it's future parents) 
 		// when set, can be reset by ::simplify().
 		//
 		expression& make_lazy() { is_lazy = true; return *this; }
-		expression make_lazy() const
-		{
-			if ( is_lazy ) return *this;
-			return std::move( clone().make_lazy() );
-		}
+
+		// Force the inlining of the destructor.
+		//
+		__forceinline ~expression() {}
 	};
 
 	// Boxed expression solves the aforementioned problem by creating a type that can be 

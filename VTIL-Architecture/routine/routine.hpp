@@ -26,11 +26,11 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #pragma once
+#include <vtil/utility>
 #include <map>
 #include <mutex>
 #include <type_traits>
 #include <functional>
-#include <vtil/utility>
 #include "../arch/identifier.hpp"
 #include "instruction.hpp"
 #include "call_convention.hpp"
@@ -50,9 +50,15 @@ namespace vtil
 	//
 	struct routine
 	{
+	protected:
+		// This structure cannot be copied without a call to ::clone().
+		//
+		routine( const routine& ) = default;
+		routine& operator=( const routine& ) = default;
+	public:
 		// Mutex guarding the whole structure, more information on thread-safety can be found at basic_block.hpp.
 		//
-		mutable std::recursive_mutex mutex;
+		mutable relaxed<std::recursive_mutex> mutex;
 
 		// Physical architecture routine is bound to.
 		//
@@ -60,12 +66,19 @@ namespace vtil
 
 		// Constructed from architecture identifier.
 		//
-		routine( architecture_identifier arch_id ) : arch_id( arch_id ) {};
-
-		// This structure cannot be copied without a call to ::clone().
-		//
-		routine( const routine& ) = delete;
-		routine& operator=( const routine& ) = delete;
+		routine( architecture_identifier arch_id ) 
+			: arch_id( arch_id ) 
+		{
+			switch ( arch_id )
+			{
+				case architecture_arm64:   routine_convention =    arm64::default_call_convention;
+				                           subroutine_convention = arm64::default_call_convention; break;
+				case architecture_amd64:   routine_convention =    amd64::default_call_convention;
+				                           subroutine_convention = amd64::default_call_convention; break;
+				case architecture_virtual: routine_convention =    { .purge_stack = true };
+				                           subroutine_convention = { .purge_stack = true }; break;
+			}
+		};
 
 		// Cache of explored blocks, mapping virtual instruction pointer to the basic block structure.
 		//
@@ -82,27 +95,27 @@ namespace vtil
 
 		// Last local identifier used for an internal register.
 		//
-		std::atomic<uint64_t> last_internal_id = { 0 };
+		relaxed_atomic<uint64_t> last_internal_id = { 0 };
 
-		// Calling convention of the routine. (TODO: Remove hard-coded amd64 ref)
+		// Calling convention of the routine.
 		//
-		call_convention routine_convention = amd64::default_call_convention;
+		call_convention routine_convention;
 
-		// Calling convention of a non-specialized VXCALL. (TODO: Remove hard-coded amd64 ref)
+		// Calling convention of a non-specialized VXCALL.
 		//
-		call_convention subroutine_convention = amd64::default_call_convention;
+		call_convention subroutine_convention;
 
 		// Convention of specialized calls, maps the vip of the VXCALL instruction onto the convention used.
 		//
-		std::map<vip_t, call_convention> spec_subroutine_conventions;
+		std::unordered_map<vip_t, call_convention> spec_subroutine_conventions;
 
 		// Misc. stats.
 		//
-		std::atomic<size_t> local_opt_count = { 0 };
+		relaxed_atomic<uint64_t> local_opt_count = { 0 };
 
 		// Multivariate runtime context.
 		//
-		mutable multivariate context = {};
+		multivariate<routine> context = {};
 
 		// Helpers for the allocation of unique internal registers.
 		//
@@ -167,6 +180,16 @@ namespace vtil
 		//
 		void flush_paths();
 
+		// Finds a block in the list, get variant will throw if none found.
+		//
+		basic_block* find_block( vip_t vip ) const;
+		basic_block* get_block( vip_t vip ) const;
+
+		// Tries creating a new block bound to this routine.
+		// - Mimics ::emplace, returns an additional bool reporting whether it's found or not.
+		//
+		std::pair<basic_block*, bool> create_block( vip_t vip, basic_block* src = nullptr );
+
 		// Deletes a block, should have no links or links must be nullified (no back-links).
 		//
 		void delete_block( basic_block* block );
@@ -179,10 +202,11 @@ namespace vtil
 		template<typename callback, typename iterator_type>
 		void enumerate_bwd( callback fn, const iterator_type& src, const iterator_type& dst = {} ) const;
 
-		// Returns the number of basic blocks and instructions in the routine.
+		// Provide basic statistics about the complexity of the routine.
 		//
 		size_t num_blocks() const;
 		size_t num_instructions() const;
+		size_t num_branches() const;
 
 		// Routine structures free all basic blocks they own upon their destruction.
 		//

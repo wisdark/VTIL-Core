@@ -26,7 +26,6 @@
 // POSSIBILITY OF SUCH DAMAGE.        
 //
 #include "bblock_extension_pass.hpp"
-#include <vtil/query>
 
 namespace vtil::optimizer
 {
@@ -47,17 +46,21 @@ namespace vtil::optimizer
 		while ( blk->next.size() == 1 &&
 				blk->next[ 0 ]->prev.size() == 1 &&
 				blk->next[ 0 ] != blk &&
-				blk->stream.back().base->is_branching_virt() )
+				blk->back().base->is_branching_virt() )
 		{
 			// Pop the branching instruction.
 			//
-			blk->stream.pop_back();
+			blk->pop_back();
 
 			// For each instruction in the destination:
 			//
 			basic_block* blk_next = blk->next[ 0 ];
-			for ( instruction& ins : *blk_next )
+			for ( auto& _ins : *blk_next )
 			{
+				// Make mutable, we don't need to track changes on it anymore since it'll be deleted.
+				//
+				auto& ins = make_mutable( _ins );
+
 				// For each temporary register used, shift by current maximum:
 				//
 				for ( operand& op : ins.operands )
@@ -87,7 +90,7 @@ namespace vtil::optimizer
 				// Shift stack indexes by current maximum and move the instruction to the current block.
 				//
 				ins.sp_index += blk->sp_index;
-				blk->stream.push_back( std::move( ins ) );
+				blk->np_emplace_back( std::move( ins ) );
 			}
 
 			// Merge block states.
@@ -124,6 +127,8 @@ namespace vtil::optimizer
 		// Invoke recursive optimizer starting from entry point.
 		//
 		visited.reserve( rtn->explored_blocks.size() );
-		return pass( rtn->entry_point, true );
+		size_t n = pass( rtn->entry_point, true );
+		if ( n ) symbolic::purge_simplifier_state();
+		return n;
 	}
 };

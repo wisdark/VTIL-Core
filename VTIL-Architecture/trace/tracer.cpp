@@ -28,6 +28,7 @@
 #include "tracer.hpp"
 #include <vtil/io>
 #include "../vm/lambda.hpp"
+#include <vtil/utility>
 
 namespace vtil
 {
@@ -135,7 +136,7 @@ namespace vtil
 			return;
 		}
 
-		std::unordered_map<symbolic::variable, symbolic::expression::reference, hasher<>> cache;
+		std::unordered_map<symbolic::variable, symbolic::expression::reference> cache;
 		cache.reserve( inout->depth );
 		
 		inout.transform( [ &cache, &fn ] ( symbolic::expression::delegate& exp )
@@ -169,10 +170,8 @@ namespace vtil
 	// meaning the origin expression was a variable and it infinite-looped during propagation by itself.
     // - Note: New iterator should be a connected block's end.
 	//
-    static bool propagate( symbolic::expression::reference& ref, const il_const_iterator& it, tracer* tracer, const path_entry& prev_link, int64_t limit )
+    static bool propagate( symbolic::expression::reference& ref, const il_const_iterator& it, tracer* tracer, optional_creference<path_entry> prev_link, int64_t limit )
     {
-		static const auto& null_link = make_default<path_entry>();
-
         using namespace logger;
 
 #if VTIL_OPT_TRACE_VERBOSE
@@ -209,7 +208,7 @@ namespace vtil
 					warning(
 						"Local variable %s is used before value assignment (Block %x).\n",
 						var,
-						var.at.container->entry_vip
+						var.at.block->entry_vip
 					);
 				}
 
@@ -232,7 +231,7 @@ namespace vtil
 				// Fail if propagation fails.
 				//
 				symbolic::expression::reference mem_ptr = std::move( mem.base.base );
-				propagate( mem_ptr, it, tracer->purify(), null_link, limit );
+				propagate( mem_ptr, it, tracer->purify(), std::nullopt, limit );
 				if ( !mem_ptr )
 				{
 					result = false;
@@ -254,7 +253,7 @@ namespace vtil
             // Trace the variable in the destination block, fail if it fails.
             //
 			symbolic::expression::reference var_traced;
-			if ( &prev_link != &null_link )
+			if ( prev_link )
 				var_traced = rtrace_primitive( var, tracer, prev_link, limit );
 			else
 				var_traced = tracer->trace( var );
@@ -266,8 +265,8 @@ namespace vtil
 
             // If we are tracing the value of RSP, add the stack pointer delta between blocks.
             //
-            if ( var.is_register() && var.reg().is_stack_pointer() && it.container->sp_offset )
-                var_traced = var_traced + it.container->sp_offset;
+            if ( var.is_register() && var.reg().is_stack_pointer() && it.block->sp_offset )
+                var_traced = var_traced + it.block->sp_offset;
 			return var_traced;
 		} );
 
@@ -323,17 +322,17 @@ namespace vtil
 
 				// For each path:
 				//
-				bool potential_loop = true;// it_list.size() > 1 || it_list[ 0 ].container == lookup.at.container; // TODO: Fix
+				bool potential_loop = true;// it_list.size() > 1 || it_list[ 0 ].block == lookup.at.block; // TODO: Fix
 				for ( auto& it : it_list )
 				{
 					// If we've taken this path more than twice, skip it.
 					//
-					if ( !potential_loop || prev_link.count( lookup.at.container, it.container ) >= 2 )
+					if ( !potential_loop || prev_link.count( lookup.at.block, it.block ) >= 2 )
 					{
 #if VTIL_OPT_TRACE_VERBOSE
 						// Log skipping of path.
 						//
-						log<CON_CYN>( "Path [%llx->%llx] is not taken as it's n-looping.\n", lookup.at.container->entry_vip, it.container->entry_vip );
+						log<CON_CYN>( "Path [%llx->%llx] is not taken as it's n-looping.\n", lookup.at.block->entry_vip, it.block->entry_vip );
 #endif
 						continue;
 					}
@@ -341,7 +340,7 @@ namespace vtil
 #if VTIL_OPT_TRACE_VERBOSE
 					// Log tracing of path.
 					//
-					log<CON_YLW>( "Taking path [%llx->%llx]\n", lookup.at.container->entry_vip, it.container->entry_vip );
+					log<CON_YLW>( "Taking path [%llx->%llx]\n", lookup.at.block->entry_vip, it.block->entry_vip );
 #endif
 					// Propagate each variable onto to the destination block, if total fail, skip path.
 					//
@@ -350,7 +349,7 @@ namespace vtil
 						exp,
 						it,
 						tracer,
-						potential_loop ? path_entry{ .prev = &prev_link, .src = lookup.at.container, .dst = it.container } : prev_link,
+						potential_loop ? path_entry{ .prev = &prev_link, .src = lookup.at.block, .dst = it.block } : prev_link,
 						limit
 					);
 					if ( total_fail )
@@ -389,7 +388,11 @@ namespace vtil
 							result.transform( [ ] ( symbolic::expression::delegate& exp )
 							{
 								if ( exp->is_variable() )
-									( +exp )->uid.get<symbolic::variable>().is_branch_dependant = true;
+								{
+									symbolic::variable&& var = std::move( ( +exp )->uid.get<symbolic::variable>() );
+									var.is_branch_dependant = true;
+									*+exp = { var, exp->size() };
+								}
 							}, true, false );
 						}
 						break;
@@ -513,10 +516,11 @@ namespace vtil
 				result = std::move( value );
 		};
 
-		lvm.hooks.write_memory = [ & ] ( const symbolic::expression::reference& pointer, symbolic::expression::reference value )
+		lvm.hooks.write_memory = [ & ] ( const symbolic::expression::reference& pointer, deferred_value<symbolic::expression::reference> value, bitcnt_t size )
 		{
 			if ( pointer->equals( *lookup.mem().decay() ) )
-				result = std::move( value );
+				result = std::move( value.get() );
+			return true;
 		};
 
 		// Step one instruction, if result was successfuly captured, return.

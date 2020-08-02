@@ -27,48 +27,59 @@
 //
 #pragma once
 #include <vtil/utility>
-#include <vtil/math>
+#include <list>
 #include "pointer.hpp"
 #include "variable.hpp"
 #include "../arch/register_desc.hpp"
 
 namespace vtil::symbolic
 {
-	// Strictness of pointers describing what happens when the pointer could 
-	// not be resolved based on the previous write operations.
-	//
-	enum class memory_type
+	struct memory
 	{
-		// Will generate a variable of the result of dereferencing 
-		// upon default construction.
+		// Common typedefs.
 		//
-		free,
+		using store_entry =              std::pair<pointer, expression::reference>;
+		using store_type =               std::list<store_entry>;
 
-		// Will generate an undefined variable upon default construction.
+		// The memory state.
 		//
-		relaxed,
+		bool relaxed_aliasing;
+		store_type value_map;
 
-		// Will throw an exception upon default construction.
+		// Default constructor, optionally takes a boolean to indicate relaxed aliasing.
 		//
-		strict
+		memory( bool relaxed_aliasing = false )
+			: relaxed_aliasing( relaxed_aliasing ) {}
+
+		// Default copy/move.
+		//
+		memory( memory&& ) = default;
+		memory( const memory& ) = default;
+		memory& operator=( memory&& ) = default;
+		memory& operator=( const memory& ) = default;
+
+		// Wrap around the store type.
+		//
+		auto begin() { return value_map.begin(); }
+		auto end() { return value_map.end(); }
+		auto begin() const { return value_map.cbegin(); }
+		auto end() const { return value_map.cend(); }
+		size_t size() const { return value_map.size(); }
+		void reset() { value_map.clear(); }
+
+		// Returns the mask of known/unknown bits of the given region, if alias failure occurs returns nullopt.
+		// 
+		std::optional<uint64_t> known_mask( const pointer& ptr, bitcnt_t size ) const;
+		std::optional<uint64_t> unknown_mask( const pointer& ptr, bitcnt_t size ) const;
+
+		// Reads N bits from the given pointer, returns null reference if alias failure occurs.
+		// - Will output the mask of bits contained in the state into contains if it does not fail.
+		//
+		expression::reference read( const pointer& ptr, bitcnt_t size, const il_const_iterator& reference_iterator = symbolic::free_form_iterator, uint64_t* contains = nullptr ) const;
+
+		// Writes the given value to the pointer, returns null reference if alias failure occurs.
+		//
+		optional_reference<expression::reference> write( const pointer& ptr, deferred_value<expression::reference> value, bitcnt_t size );
+		optional_reference<expression::reference> write( const pointer& ptr, expression::reference value ) { return write( ptr, value, value.size() ); }
 	};
-
-	// Declaration of symbolic memory type using sinkhole.
-	//
-	using memory = sinkhole<pointer, expression::reference, pointer::make_weak>;
-	
-	// Creates a symbolic memory of the given type.
-	//
-	static memory create_memory( memory_type type )
-	{
-		switch ( type )
-		{
-			case memory_type::free:
-				return { [ ] ( const pointer& ptr, bitcnt_t size ) -> expression::reference { return make_memory_ex( ptr, size ); } };
-			case memory_type::relaxed:
-				return { [ ] ( const pointer& ptr, bitcnt_t size ) -> expression::reference { return make_undefined_ex( size ); } };
-			default:
-				return { [ ] ( const pointer& ptr, bitcnt_t size ) -> expression::reference { unreachable(); return nullptr; } };
-		}
-	}
 };

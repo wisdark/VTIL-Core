@@ -31,32 +31,66 @@
 #include <chrono>
 #include <algorithm>
 #include <functional>
+#include <atomic>
 #include <thread>
 #include <future>
+#include <vtil/symex>
 
 // [Configuration]
 // Determine whether or not to use parallel transformations and thread pooling.
 //
 #ifndef VTIL_OPT_USE_THREAD_POOLING
 	#define VTIL_OPT_USE_PARALLEL_TRANSFORM true
+#endif
+#ifndef VTIL_OPT_USE_THREAD_POOLING
 	#define VTIL_OPT_USE_THREAD_POOLING     true
 #endif
 
 namespace vtil::optimizer
 {
+	namespace impl
+	{
+		template<typename T>
+		concept AtomicSummable = requires( std::atomic<size_t>& y, T x ) { y += x; };
+
+		struct saved_cache 
+		{ 
+			symbolic::simplifier_state_ptr state = nullptr; 
+			saved_cache() { }
+			saved_cache( const saved_cache& o ) { fassert( !o.state ); }
+		};
+	};
+
 	// Passes every block through the transformer given in parallel, returns the 
 	// number of instances where this transformation was applied.
 	//
 	template<typename T, typename... Tx>
-	static size_t transform_parallel( routine* rtn, T&& fn, Tx&&... args )
+	static auto transform_parallel( routine* rtn, T&& fn, Tx&&... args )
 	{
+		using ret_type = decltype( fn( std::declval<basic_block*>(), std::declval<Tx&&>()... ) );
+
 		// Declare worker and allocate the final result.
 		//
 		std::atomic<size_t> n = { 0 };
 		auto worker = [ & ] ( basic_block* blk )
 		{
-			n += fn( blk, args... );
-			symbolic::purge_simplifier_cache();
+			// If there's a valid cache saved, swap.
+			//
+			impl::saved_cache& cache = blk->context;
+			symbolic::simplifier_state_ptr pcache = nullptr;
+			if ( cache.state )
+				pcache = symbolic::swap_simplifier_state( std::move( cache.state ) );
+
+			// Execute.
+			//
+			if constexpr ( impl::AtomicSummable<ret_type> ) 
+				n += fn( blk, args... );
+			else
+				fn( blk, args... );
+
+			// Save current cache into the block.
+			//
+			cache.state = symbolic::swap_simplifier_state( std::move( pcache ) );
 		};
 
 		// If parallel transformation is disabled, use fallback.
@@ -76,8 +110,6 @@ namespace vtil::optimizer
 			{
 				pool.emplace_back( std::async( std::launch::async, worker, blk ) );
 			} );
-
-			std::for_each( pool.begin(), pool.end(), std::mem_fn( &std::future<void>::wait ) );
 		}
 		// If thread pooling is disabled, use std::thread.
 		//
@@ -96,7 +128,8 @@ namespace vtil::optimizer
 
 		// Return final result.
 		//
-		return n;
+		if constexpr( impl::AtomicSummable<ret_type> )
+			return n.load();
 	}
 
 	// Declares a generic pass interface that any optimization pass implements.

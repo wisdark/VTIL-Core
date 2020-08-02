@@ -46,34 +46,33 @@ namespace vtil::symbolic
 	//
 	bool unique_identifier::operator==( const unique_identifier& o ) const
 	{
-		// If any of the sides do not have a value, return false.
-		//
-		if ( !value || !o.value )
-			return false;
-
 		// If hash mismatch, return false.
 		//
-		if ( hash() != o.hash() )
-			return false;
+		if ( hash_value != o.hash_value ) return false;
+
+		// Check for null.
+		//
+		if ( !value ) return !o.value;
+		if ( !o.value ) return false;
 
 		// Assert internal equivalance.
 		//
-		return compare_value ? compare_value( *this, o ) == 0 : true;
+		return compare_value( *this, o ) == 0;
 	}
 	bool unique_identifier::operator<( const unique_identifier& o ) const
 	{
 		// Consider null side less.
 		//
-		if ( !value && o.value ) return true;
-		if ( value && !o.value ) return false;
+		if ( !value ) return o.value;
+		if ( !o.value ) return false;
 
-		// Compare by hash first.
+		// Compare by hash.
 		//
-		if ( hash() != o.hash() )
-			return hash() < o.hash();
+		if ( hash_value != o.hash_value )
+			return hash_value < o.hash_value;
 
 		// Compare internals if equivalent hash.
 		//
-		return compare_value ? compare_value( *this, o ) < 0 : false;
+		return compare_value( *this, o ) < 0;
 	}
 };

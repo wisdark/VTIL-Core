@@ -301,7 +301,7 @@ namespace vtil::symbolic
 				}
 				break;
 
-			// If casting the result of an unsigned cast, just change the parameter.
+			// If casting the result of an unsigned cast:
 			//
 			case math::operator_id::ucast:
 				// If it was shrinked:
@@ -333,12 +333,12 @@ namespace vtil::symbolic
 				//
 				else
 				{
-					return *this = lhs->resize( new_size, false );
+					*+rhs = new_size;
+					return update( false );
 				}
 				break;
 
-			// If casting the result of a signed cast, change the parameter if 
-			// requested cast is also a signed.
+			// If casting the result of a signed cast:
 			//
 			case math::operator_id::cast:
 				// Signed cast should not be used to shrink.
@@ -355,7 +355,8 @@ namespace vtil::symbolic
 				//
 				else if ( signed_cast )
 				{
-					return *this = lhs->resize( new_size, true );
+					*+rhs = new_size;
+					return update( false );
 				}
 				// Else, convert to unsigned cast since top bits will be zero.
 				//
@@ -390,7 +391,6 @@ namespace vtil::symbolic
 		simplify();
 		return *this;
 	}
-
 
 	// Updates the expression state.
 	//
@@ -431,7 +431,7 @@ namespace vtil::symbolic
 			//
 			else
 			{
-				fassert( is_variable() );
+				dassert( is_variable() );
 
 				// Assign the constant complexity value.
 				//
@@ -442,38 +442,56 @@ namespace vtil::symbolic
 				hash_value = make_hash( uid.hash(), ( uint8_t ) value.size() );
 			}
 
+			// Set the signature.
+			//
+			signature = { value };
+
 			// Set simplification state.
 			//
 			simplify_hint = true;
 		}
 		else
 		{
-			fassert( is_expression() );
+			dassert( is_expression() );
 
 			// If unary operator:
 			//
-			const math::operator_desc* desc = get_op_desc();
-			if ( desc->operand_count == 1 )
+			const math::operator_desc& desc = get_op_desc();
+			if ( desc.operand_count == 1 )
 			{
 				// Partially evaluate the expression.
 				//
 				value = math::evaluate_partial( op, {}, rhs->value );
 
+				// Speculative simplification, if value is known replace with a constant, this 
+				// is a major performance boost with lazy expressions as child copies and large 
+				// destruction chains are completely avoided. Lazy expressions are meant to
+				// delay complex simplification rather than block all simplification so this
+				// step is totally fine. [1]
+				//
+				if ( ( is_lazy || auto_simplify ) && value.is_known() )
+				{
+					lhs = {}; rhs = {};
+					op = math::operator_id::invalid;
+					is_lazy = false;
+					return update( false );
+				}
+
 				// Calculate base complexity and the depth.
 				//
 				depth = rhs->depth + 1;
 				complexity = rhs->complexity * 2;
-				fassert( complexity != 0 );
+				dassert( complexity != 0 );
 				
-				// Begin hash as combine(rhs, rhs).
+				// Begin hash as rhs.
 				//
-				hash_value = make_hash( rhs->hash() );
+				hash_value = rhs->hash();
 			}
 			// If binary operator:
 			//
 			else
 			{
-				fassert( desc->operand_count == 2 );
+				dassert( desc.operand_count == 2 );
 
 				// If operation is __cast or __ucast, right hand side must always be a constant, propagate 
 				// left hand side value and resize as requested.
@@ -490,11 +508,7 @@ namespace vtil::symbolic
 					value = math::evaluate_partial( op, lhs->value, rhs->value );
 				}
 
-				// Speculative simplification, if value is known replace with a constant, this 
-				// is a major performance boost with lazy expressions as child copies and large 
-				// destruction chains are completely avoided. Lazy expressions are meant to
-				// delay complex simplification rather than block all simplification so this
-				// step is totally fine.
+				// Speculative simplification, see [1].
 				//
 				if ( ( is_lazy || auto_simplify ) && value.is_known() )
 				{
@@ -598,27 +612,25 @@ namespace vtil::symbolic
 				//
 				depth = std::max( lhs->depth, rhs->depth ) + 1;
 				complexity = ( lhs->complexity + rhs->complexity ) * 2;
-				fassert( complexity != 0 );
+				dassert( complexity != 0 );
 
 				// Multiply with operator complexity coefficient.
 				//
-				complexity *= desc->complexity_coeff;
+				complexity *= desc.complexity_coeff;
 
-				// If operator is commutative, sort the array so that the
-				// positioning does not matter.
+				// Begin hash as combine(op#1, op#2), make it unordered if operator is commutative.
 				//
-				hash_t operand_hashes[] = { lhs->hash(), rhs->hash() };
-				if ( desc->is_commutative )
-					std::sort( operand_hashes, std::end( operand_hashes ) );
-				
-				// Begin hash as combine(op#1, op#2).
-				//
-				hash_value = make_hash( operand_hashes );
+				hash_value = desc.is_commutative ? combine_unordered_hash( lhs->hash(), rhs->hash() ) : combine_hash( lhs->hash(), rhs->hash() );
 			}
+
+			// Set the signature.
+			//
+			if( lhs ) signature = { lhs->signature, op, rhs->signature };
+			else      signature = {                 op, rhs->signature };
 
 			// Append depth, size, and operator information to the hash.
 			//
-			hash_value = make_hash( hash_value, op, depth, uint8_t( value.size() ) );
+			hash_value = combine_hash( hash_value, make_hash( op, depth, uint8_t( value.size() ) ) );
 
 			// Punish for mixing bitwise and arithmetic operators.
 			//
@@ -631,10 +643,10 @@ namespace vtil::symbolic
 					// This works since mulitplication between them will only be negative
 					// if the hints mismatch.
 					//
-					complexity *= 1 + math::sgn( operand->get()->get_op_desc()->hint_bitwise * desc->hint_bitwise );
+					complexity *= 1 + math::sgn( operand->get()->get_op_desc().hint_bitwise * desc.hint_bitwise );
 				}
 			}
-			
+
 			// Reset simplification state since expression was updated.
 			//
 			simplify_hint = false;
@@ -676,25 +688,86 @@ namespace vtil::symbolic
 		// this way and additionally we avoid copying where an operand is being simplified
 		// as that can be replaced by a simple swap of shared references.
 		//
-		reference ref = make_local_reference( this );
+		reference ref = ( reference&& ) make_local_reference( this );
 		simplify_expression( ref, prettify );
-		if ( &*ref != this ) operator=( *ref );
 
 		// Set the simplifier hint to indicate skipping further calls to simplify_expression.
 		//
-		simplify_hint = true;
+		ref->simplify_hint = true;
+
+		// If reference is changed, move from it.
+		//
+		if ( ref.get() != this )
+		{
+			if( ref.get_entry()->second.load() == 1 ) operator=( std::move( *ref ) );
+			else                                      operator=( *ref );
+		}
 		return *this;
 	}
+
+	// Returns whether the given expression is identical to the current instance.
+	//
+	static bool is_identical_impl( const expression& self, const expression& other )
+	{
+		if ( &self == &other ) return true;
+
+		auto report_hash_collision = [ & ] ()
+		{
+#ifdef _DEBUG
+			logger::log( "Hash collision detected!\n" );
+			logger::log( "[0]: %s\n", self );
+			logger::log( "[1]: %s\n", other );
+
+			if ( make_copy( self ).update( false ).hash() != self.hash() )
+				logger::log( "Invalid hash for A\n" );
+			else if ( make_copy( other ).update( false ).hash() != other.hash() )
+				logger::log( "Invalid hash for B\n" );
+#endif
+			return false;
+		};
+		constexpr auto cmp = is_identical_impl;
+
+		// If hash/size mismatches, return false without checking anything.
+		//
+		if ( self.hash() != other.hash() || self.size() != other.size() )
+			return false;
+
+		// If variable, check if the identifiers match.
+		//
+		if ( self.is_variable() )
+			return ( other.is_variable() && self.uid == other.uid ) || report_hash_collision();
+
+		// If constant, check if the constants match.
+		//
+		if ( self.is_constant() )
+			return ( other.is_constant() && self.value == other.value ) || report_hash_collision();
+
+		// If operator is not the same, return false.
+		//
+		if ( self.op != other.op )
+			return report_hash_collision();
+
+		// Resolve operator descriptor, if unary, just compare right hand side.
+		//
+		const math::operator_desc& desc = self.get_op_desc();
+		if ( desc.operand_count == 1 )
+			return cmp( *self.rhs, *other.rhs ) || report_hash_collision();
+
+		// If both sides match, return true.
+		//
+		if ( cmp( *self.lhs, *other.lhs ) && cmp( *self.rhs, *other.rhs ) )
+			return true;
+
+		// If not, check in reverse as well if commutative and return the final result.
+		//
+		return ( desc.is_commutative && cmp( *self.lhs, *other.rhs ) && cmp( *self.rhs, *other.lhs ) ) || report_hash_collision();
+	}
+	bool expression::is_identical( const expression& other ) const { return is_identical_impl( *this, other ); }
 
 	// Returns whether the given expression is equivalent to the current instance.
 	//
 	bool expression::equals( const expression& other ) const
 	{
-		// Propagate invalid.
-		//
-		if ( !is_valid() )            return !other.is_valid();
-		else if ( !other.is_valid() ) return false;
-
 		// If identical, return true.
 		//
 		if ( is_identical( other ) )
@@ -706,29 +779,22 @@ namespace vtil::symbolic
 			 ( other.known_zero() & known_one() ))
 			return false;
 
-		// Try evaluating with 2 random values, if values do not match, expressions cannot be equivalent.
+		// Fast path: if x values do not match, expressions cannot be equivalent.
 		//
-		static constexpr auto eval_keys = make_crandom_n<2>();
-		for ( uint64_t key : eval_keys )
-		{
-			auto eval_helper = [ = ] ( const unique_identifier& uid ) 
-			{
-				return uid.hash() ^ key;
-			};
-			if ( this->evaluate( eval_helper ).known_one() != 
-				 other.evaluate( eval_helper ).known_one() )
-				return false;
-		}
+		if( xvalues() != other.xvalues() )
+			return false;
 
 		// Simplify both expressions.
 		//
-		expression a = simplify();
-		expression b = other.simplify();
+		expression::reference a = make_local_reference( this );
+		expression::reference b = make_local_reference( &other );
+		a.simplify();
+		b.simplify();
 
 		// Determine the final bitwise hint.
 		//
-		int8_t a_hint = a.is_expression() ? a.get_op_desc()->hint_bitwise : 0;
-		int8_t b_hint = b.is_expression() ? b.get_op_desc()->hint_bitwise : 0;
+		int8_t a_hint = a->is_expression() ? a->get_op_desc().hint_bitwise : 0;
+		int8_t b_hint = b->is_expression() ? b->get_op_desc().hint_bitwise : 0;
 		int8_t m_hint = a_hint != 0 && b_hint != 0 
 			? ( a_hint == 1 && b_hint == 1 ) 
 			: ( a_hint != 0 ? a_hint : b_hint );
@@ -746,50 +812,186 @@ namespace vtil::symbolic
 			       ( a - b ).get().value_or( -1 ) == 0;
 	}
 
-	// Returns whether the given expression is identical to the current instance.
+	// Returns whether the given expression is matching the current instance, if so returns
+	// the UID relation table, otherwise returns nullopt.
 	//
-	bool expression::is_identical( const expression& other ) const
+	using fast_uid_relation_table = stack_vector<std::pair<expression::weak_reference, expression::weak_reference>>;
+	static bool match_to_impl( const expression::reference& a, const expression::reference& b, fast_uid_relation_table* tbl, bool same_depth )
 	{
-		// Propagate invalid and self.
+		// If identical, try pushing all variables into the table.
 		//
-		if ( !is_valid() )            return !other.is_valid();
-		else if ( !other.is_valid() ) return false;
-		else if ( this == &other )    return true;
+		if ( a->is_identical( *b ) )
+		{
+			bool success = true;
+			a.transform( [ & ] ( symbolic::expression_delegate& exp )
+			{
+				if ( !success || !exp->is_variable() ) 
+					return;
+				for ( auto& [src, dst] : *tbl )
+				{
+					if ( exp->uid == src->uid && 
+						 exp->uid != dst->uid )
+					{
+						success = false;
+						return;
+					}
+				}
+				tbl->emplace_back( exp.ref, exp.ref );
+			}, true, false );
+			return success;
+		}
 
-		// If hash mismatch, return false without checking anything.
+		// Check if properties match.
 		//
-		if ( hash() != other.hash() )
+		if ( a->signature != b->signature || ( same_depth && a->depth != b->depth ) || a->size() != b->size() )
 			return false;
 
-		// If operator or the sizes are not the same, return false.
+		// If variable:
 		//
-		if ( op != other.op || size() != other.size() )
-			return false;
+		if ( a->is_variable() )
+		{
+			// Skip if compared expression is not a variable if same depth is set.
+			//
+			if ( same_depth && !b->is_variable() )
+				return false;
 
-		// If variable, check if the identifiers match.
-		//
-		if ( is_variable() )
-			return other.is_variable() && uid == other.uid;
+			// Check if this UID is already in the table, if so return the result of
+			// the comparison of the mapping. Otherwise insert into the table.
+			//
+			for ( auto& [src, dst] : *tbl )
+				if ( src->uid == a->uid )
+					return dst->is_identical( *b );
+			tbl->emplace_back( a, b );
+			return true;
+		}
 
 		// If constant, check if the constants match.
 		//
-		if ( is_constant() )
-			return other.is_constant() && value == other.value;
+		if ( a->is_constant() )
+			return b->is_constant() && a->value == b->value;
 
 		// Resolve operator descriptor, if unary, just compare right hand side.
 		//
-		const math::operator_desc* desc = get_op_desc();
-		if ( desc->operand_count == 1 )
-			return rhs == other.rhs || rhs->is_identical( *other.rhs );
+		const math::operator_desc& desc = a->get_op_desc();
+		if ( desc.operand_count == 1 )
+		{
+			size_t prev = tbl->size();
+			if ( match_to_impl( a->rhs, b->rhs, tbl, same_depth ) )
+				return true;
+			tbl->resize( prev );
+			return false;
+		}
 
 		// If both sides match, return true.
 		//
-		if ( lhs->is_identical( *other.lhs ) && rhs->is_identical( *other.rhs ) )
+		size_t prev = tbl->size();
+		if ( match_to_impl( a->lhs, b->lhs, tbl, same_depth ) &&
+			 match_to_impl( a->rhs, b->rhs, tbl, same_depth ) )
 			return true;
+		tbl->resize( prev );
 
-		// If not, check in reverse as well if commutative and return the final result.
+		// Fail if not commutative.
 		//
-		return desc->is_commutative && lhs->is_identical( *other.rhs ) && rhs->is_identical( *other.lhs );
+		if ( !desc.is_commutative ) 
+			return false;
+
+		// Check in reverse as well and return the final result.
+		//
+		prev = tbl->size();
+		if ( match_to_impl( a->rhs, b->lhs, tbl, same_depth ) &&
+			 match_to_impl( a->lhs, b->rhs, tbl, same_depth ) )
+			return true;
+		tbl->resize( prev );
+		return false;
+	}
+	std::optional<expression::uid_relation_table> expression::match_to( const expression& other, bool same_depth ) const
+	{
+		auto a = make_local_reference( this );
+		auto b = make_local_reference( &other );
+
+		// If variable, fail if other expression is not a variable of same size.
+		//
+		if ( is_variable() )
+		{
+			if ( b->is_variable() && size() == b->size() )
+				return a->uid != b->uid ? expression::uid_relation_table{ { a, b } } : expression::uid_relation_table{};
+		}
+		// Otherwise, create the relation table and call into real implementation.
+		//
+		else
+		{
+			fast_uid_relation_table fast_tbl;
+			if ( match_to_impl( ( expression::reference& )a, ( expression::reference& )b, &fast_tbl, same_depth ) )
+				return expression::uid_relation_table{ fast_tbl.begin(), fast_tbl.end() };
+		}
+		return std::nullopt;
+	}
+
+	// Calculates the x values.
+	//
+	std::array<uint64_t, VTIL_SYMEX_XVAL_KEYS> expression::xvalues() const
+	{
+		std::array<uint64_t, VTIL_SYMEX_XVAL_KEYS> result;
+		
+		// If binary operation:
+		//
+		if ( lhs )
+		{
+			// Determine rhs mask.
+			//
+			uint64_t rhs_mask;
+			switch ( op )
+			{
+				case math::operator_id::shift_right:
+				case math::operator_id::shift_left:
+				case math::operator_id::rotate_right:
+				case math::operator_id::rotate_left:
+				case math::operator_id::bit_test:     rhs_mask = rhs->is_variable() 
+					                                               ? lhs->size() - 1 : ~0ull; break;
+				default:                              rhs_mask = ~0ull;                       break;
+			}
+
+			// Evalute based on lhs's and rhs's xvalues.
+			//
+			auto xlhs = lhs->xvalues();
+			auto xrhs = rhs->xvalues();
+			for ( auto [out, vlhs, vrhs] : zip( result, xlhs, xrhs ) )
+				out = math::evaluate( op, lhs->size(), vlhs, rhs->size(), vrhs & rhs_mask ).first;
+		}
+		// If unary operation:
+		//
+		else if( rhs )
+		{
+			// Evalute based on rhs's xvalues.
+			//
+			auto xrhs = rhs->xvalues();
+			for ( auto [out, vrhs] : zip( result, xrhs ) )
+				out = math::evaluate( op, 0, 0, rhs->size(), vrhs ).first;
+		}
+		// If constant:
+		//
+		else if ( is_constant() )
+		{
+			// All x values are equivalent to the actual value.
+			//
+			result.fill( *value.get() );
+		}
+		// If variable:
+		//
+		else if ( is_variable() )
+		{
+			static constexpr auto keys = make_crandom_n<VTIL_SYMEX_XVAL_KEYS>();
+
+			// Generate x values based on the hash.
+			//
+			for ( auto [out, key] : zip( result, keys ) )
+				out = ( hash_value ^ key ) & value.value_mask();
+		}
+		else
+		{
+			unreachable();
+		}
+		return result;
 	}
 
 	// Converts to human-readable format.
@@ -799,7 +1001,7 @@ namespace vtil::symbolic
 		// Redirect to operator descriptor.
 		//
 		if ( is_expression() )
-			return get_op_desc()->to_string( lhs ? lhs->to_string() : "", rhs->to_string() );
+			return get_op_desc().to_string( lhs ? lhs->to_string() : "", rhs->to_string() );
 
 		// Handle constants, invalids and variables.
 		//
@@ -849,11 +1051,11 @@ namespace vtil::symbolic
 	//
 	hash_t expression_reference::hash() const
 	{
-		return is_valid() ? get()->hash() : hash_t{ 0 };
+		return get()->hash();
 	}
 	bool expression_reference::is_simple() const
 	{
-		return !is_valid() || get()->simplify_hint;
+		return get()->simplify_hint;
 	}
 	void expression_reference::update( bool auto_simplify ) 
 	{

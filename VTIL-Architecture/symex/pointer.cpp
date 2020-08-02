@@ -33,11 +33,6 @@
 
 namespace vtil::symbolic
 {
-	// List of pointer bases we consider to be restricted, can be expanded by user
-	// but defaults to image base and stack pointer.
-	//
-	std::set<register_desc> pointer::restricted_bases = { REG_SP, REG_IMGBASE };
-
 	// Given a variable or an expression, checks if it is basing from a 
 	// known restricted pointer, if so returns the register it's based off of.
 	//
@@ -87,21 +82,12 @@ namespace vtil::symbolic
 		}
 	}
 
-	// Magic value substituting for invalid xpointers.
-	//
-	static constexpr uint64_t invalid_xpointer = make_crandom();
-
-	// List of keys used for xpointer generation.
-	//
-	static constexpr std::array xpointer_keys = make_crandom_n<VTIL_SYM_PTR_XPTR_KEYS>( 1 );
-
 	// Construct from symbolic expression.
 	//
 	pointer::pointer( const expression::reference& _base ) : base( _base.simplify() )
 	{
-		// Determine pointer strength and the flags.
+		// Determine pointer flags.
 		//
-		strength = +1;
 		base->evaluate( [ & ] ( const unique_identifier& uid )
 		{
 			// If variable is a register that is a restricted base pointer:
@@ -112,41 +98,15 @@ namespace vtil::symbolic
 				//
 				flags |= base->flags;
 			}
-			// Contains an unknown variable so make weak pointer.
-			//
-			else
-			{
-				strength = -1;
-			}
 
 			// Return dummy result.
 			//
 			return 0ull;
 		} );
 
-		// Initialize X-Pointers.
+		// Initialize x values.
 		//
-		for ( auto [xptr, key] : zip( xpointer, xpointer_keys ) )
-		{
-			xptr = base->evaluate( [ k = uint64_t( key >> 1 ) ]( const unique_identifier& uid )
-			{
-				// Hash the identifier of the value with the current key and mask it.
-				//
-				const variable& var = uid.get<variable>();
-				if ( var.is_register() )
-				{
-					const variable::register_t& reg = var.reg();
-					uint64_t pseudo_pointer = make_hash( reg.flags, reg.bit_offset, reg.combined_id, k ).as64();
-					return pseudo_pointer & math::fill( reg.bit_count );
-				}
-				else
-				{
-					const variable::memory_t& mem = var.mem();
-					uint64_t pseudo_pointer = combine_hash( var.hash(), hash_t{ k } ).as64();
-					return pseudo_pointer & math::fill( mem.bit_count );
-				}
-			} ).get().value_or( invalid_xpointer );
-		}
+		xvalues = base->xvalues();
 	}
 
 	// Simple pointer offseting.
@@ -156,8 +116,8 @@ namespace vtil::symbolic
 		pointer copy = *this;
 		copy.base = std::move( copy.base ) + dst;
 		std::transform(
-			std::begin( xpointer ), std::end( xpointer ),
-			std::begin( copy.xpointer ),
+			std::begin( xvalues ), std::end( xvalues ),
+			std::begin( copy.xvalues ),
 			[ = ] ( auto v ) { return v + dst; }
 		);
 		return copy;
@@ -167,9 +127,9 @@ namespace vtil::symbolic
 	//
 	std::optional<int64_t> pointer::operator-( const pointer& o ) const
 	{
-		int64_t delta = xpointer[ 0 ] - o.xpointer[ 0 ];
-		for ( size_t n = 1; n < xpointer.size(); n++ )
-			if ( ( xpointer[ n ] - o.xpointer[ n ] ) != delta )
+		int64_t delta = xvalues[ 0 ] - o.xvalues[ 0 ];
+		for ( size_t n = 1; n < xvalues.size(); n++ )
+			if ( ( xvalues[ n ] - o.xvalues[ n ] ) != delta )
 				return std::nullopt;
 		return ( base - o.base ).get<true>();
 	}
@@ -181,7 +141,7 @@ namespace vtil::symbolic
 	//
 	bool pointer::can_overlap( const pointer& o ) const
 	{
-		return ( ( flags & o.flags ) == flags ) ||
+		return ( ( flags & o.flags ) == flags   ) ||
 			   ( ( flags & o.flags ) == o.flags );
 	}
 
@@ -189,7 +149,7 @@ namespace vtil::symbolic
 	//
 	bool pointer::can_overlap_s( const pointer& o ) const
 	{
-		return ( ( flags & o.flags ) == flags ) &&
+		return ( ( flags & o.flags ) == flags   ) &&
 			   ( ( flags & o.flags ) == o.flags );
 	}
 };

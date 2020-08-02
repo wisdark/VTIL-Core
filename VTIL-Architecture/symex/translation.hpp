@@ -104,7 +104,7 @@ namespace vtil
 				{
 					// If simple stack access:
 					//
-					if( auto displacement = ( var.mem().base - symbolic::make_register_ex( REG_SP ) ) )
+					if( auto displacement = ( var.mem().base - symbolic::CTX[ REG_SP ] ) )
 					{
 						operand tmp = block->tmp( exp->size() );
 						block->ldd( tmp, REG_SP, *displacement );
@@ -262,7 +262,7 @@ namespace vtil
 				// If left hand side is not a register, and operator is commutative, switch sides.
 				// Force left hand side into a register.
 				//
-				if ( !lhs.is_register() && math::descriptor_of( op )->is_commutative )
+				if ( !lhs.is_register() && math::descriptor_of( op ).is_commutative )
 					std::swap( lhs, rhs );
 
 				// Push [<INS> Lhs Rhs] and return Lhs.

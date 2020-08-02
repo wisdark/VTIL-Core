@@ -30,50 +30,43 @@
 #include <mutex>
 #include "variant.hpp"
 #include "lt_typeid.hpp"
+#include "type_helpers.hpp"
+#include "relaxed_atomics.hpp"
 
 namespace vtil
 {
+	namespace impl
+	{
+		template<typename C, typename T>
+		concept HasContext = requires( T v, C* p ) { p = &v.context; };
+	};
+
+	// If context type inherits from this type, the result of [T& T::update( const owner* )] will be returned instead of T&.
+	//
+	struct mv_updatable_tag {};
+
 	// Multivariates store multiple types in a non-template type, mainly to be used by
 	// optimizers to store arbitrary per-block / per-instruction data at the respective 
 	// structures directly.
 	//
+	template<typename owner>
 	struct multivariate
 	{
-		mutable std::mutex mtx;
-		mutable std::map<size_t, variant> database;
+		mutable relaxed<std::mutex> mtx;
+		mutable std::unordered_map<size_t, variant> database;
 
-		// Default constructor.
+		// Default copy/move/construct.
 		//
 		multivariate() = default;
-
-		// Allow copy/move construction/assignment.
-		//
-		multivariate( const multivariate& o )
-		{
-			std::lock_guard _g{ o.mtx };
-			database = o.database;
-		}
-		multivariate( multivariate&& o ) noexcept
-		{
-			database = std::move( o.database );
-		}
-		multivariate& operator=( const multivariate& o )
-		{
-			std::lock_guard _g{ o.mtx }, _g2{ mtx };
-			database = o.database;
-			return *this;
-		}
-		multivariate& operator=( multivariate&& o ) noexcept
-		{
-			std::lock_guard _g{ mtx };
-			database = std::move( o.database );
-			return *this;
-		}
+		multivariate( const multivariate& o ) = default;
+		multivariate( multivariate&& o ) = default;
+		multivariate& operator=( const multivariate& o ) = default;
+		multivariate& operator=( multivariate&& o ) = default;
 
 		// Purges the object of the given type from the store.
 		//
 		template<typename T>
-		const void purge() const
+		void purge() const
 		{
 			std::lock_guard _g{ mtx };
 			database.erase( lt_typeid_v<T> );
@@ -82,38 +75,39 @@ namespace vtil
 		// Checks if we have the type in the store.
 		//
 		template<typename T>
-		const bool has() const
+		bool has() const
 		{
 			std::lock_guard _g{ mtx };
 			return database.contains( lt_typeid_v<T> );
 		}
 
-		// Functional getter, if variant is already in the database will return
-		// a reference to the stored data as is, otherwise will construct an empty 
-		// T{} and place it in the database before referencing, eventhough the const use
-		// is mutable, structure wraps each access to the database with a mutex so the
-		// indexing is still thread-safe.
+		// Getter of the types.
 		//
 		template<typename T>
-		const T& get() const
+		T& get() const
 		{
-			// If variant is already in the database, return as is, else
-			// default construct it and reference that instead.
+			// Acquire the database lock and check for existance.
 			//
 			std::lock_guard _g{ mtx };
 			variant& var = database[ lt_typeid_v<T> ];
-			if( !var ) var = T{};
-			return var.get<T>();
+
+			// If not constructed yet:
+			//
+			if ( !var ) var = T();
+
+			// Return the reference.
+			//
+			T& ref = var.get<T>();
+			if constexpr ( std::is_base_of_v<mv_updatable_tag, T> && impl::HasContext<multivariate<owner>, owner> )
+				return ref.update( ptr_at<owner>( this, -make_offset( &owner::context ) ) );
+			else
+				return ref;
 		}
-		template<typename T>
-		T& get() { return const_cast<T&>( ( ( const multivariate* ) this )->get<T>() ); }
 
 		// Allows for convinient use of the type in the format of:
 		// - block_cache& cache = multivariate;
 		//
 		template<typename T>
-		operator T&() { return get<T>(); }
-		template<typename T>
-		operator const T&() const { return get<T>(); }
+		operator T&() const { return get<std::remove_const_t<T>>(); }
 	};
 };

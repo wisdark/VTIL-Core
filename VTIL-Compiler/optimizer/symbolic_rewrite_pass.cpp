@@ -34,72 +34,32 @@ namespace vtil::optimizer
 	//
 	size_t isymbolic_rewrite_pass::pass( basic_block* blk, bool xblock )
 	{
-		// Determine the temporary sizes in the block.
-		//
-		std::map<std::pair<uint64_t, uint64_t>, bitcnt_t> temp_sizes;
-		for ( auto& ins : blk->stream )
-		{
-			for ( auto& op : ins.operands )
-			{
-				if ( op.is_register() && op.reg().is_local() )
-				{
-					bitcnt_t& sz = temp_sizes[ { op.reg().flags, op.reg().combined_id } ];
-					sz = std::max( sz, op.reg().bit_count + op.reg().bit_offset );
-				}
-			}
-		}
-
 		// Create an instrumented symbolic virtual machine and hook execution to exit at 
 		// instructions that cannot be executed out-of-order.
 		//
 		lambda_vm<symbolic_vm> vm;
-		vm.hooks.size_register = [ & ] ( const register_desc& reg )
-		{
-			if ( auto it = temp_sizes.find( { reg.flags, reg.combined_id } );
-				      it != temp_sizes.end() )
-			{
-				// Pick the minimum size from preferred sizes.
-				//
-				return it->second ? it->second : 64;
-			}
-			return 64;
-		};
 		vm.hooks.execute = [ & ] ( const instruction& ins )
 		{
 			// Halt if branching instruction.
 			//
 			if ( ins.base->is_branching() )
-				return false;
+				return vm_exit_reason::unknown_instruction;
 
 			// Halt if instruction is volatile.
 			//
 			if ( ins.is_volatile() )
-				return false;
+				return vm_exit_reason::unknown_instruction;
 
 			// Halt if stack pointer is reset.
 			//
 			if ( ins.sp_reset )
-				return false;
+				return vm_exit_reason::unknown_instruction;
 
 			// Halt if instruction accesses volatile registers excluding ?UD.
 			//
 			for ( auto& op : ins.operands )
 				if ( op.is_register() && op.reg().is_volatile() && !op.reg().is_undefined() )
-					return false;
-
-			// Halt if instruction is accessing to non-restricted memory.
-			//
-			if ( ins.base->accesses_memory() )
-			{
-				auto [base, offset] = ins.memory_location();
-				if ( !symbolic::pointer::restricted_bases.contains( base ) )
-				{
-					auto ptr = vm.read_register( base ) + offset;
-					for ( auto& [k, v] : vm.memory_state )
-						if ( k.can_overlap( ptr ) && !( k - ptr ).has_value() )
-							return false;
-				}
-			}
+					return vm_exit_reason::unknown_instruction;
 
 			// Invoke original handler.
 			//
@@ -108,15 +68,14 @@ namespace vtil::optimizer
 
 		// Allocate a temporary block.
 		//
-		basic_block temporary_block;
+		basic_block temporary_block = { blk->owner, blk->entry_vip };
 		temporary_block.last_temporary_index = blk->last_temporary_index;
-		temporary_block.owner = blk->owner;
 
 		for ( il_const_iterator it = blk->begin(); !it.is_end(); )
 		{
 			// Execute starting from the instruction.
 			//
-			auto limit = vm.run( it, true );
+			auto [limit, rsn] = vm.run( it );
 
 			// Create a batch translator and an instruction buffer.
 			//
@@ -127,10 +86,19 @@ namespace vtil::optimizer
 			//
 			for ( auto& pair : vm.register_state )
 			{
+				// Skip if not written, else collapse value.
+				// -- TODO: Will be reworked...
+				//
+				bitcnt_t msb = math::msb( pair.second.bitmap ) - 1;
+				if ( msb == -1 ) continue;
+				bitcnt_t size = pair.second.linear_store[ msb ].size() + msb;
+
+				register_desc k = { pair.first, size };
+				auto v = vm.read_register( k ).simplify();
+
 				// If value is unchanged, skip.
 				//
-				auto k = pair.first; auto v = pair.second.simplify();
-				symbolic::expression v0 = symbolic::make_register_ex( k );
+				symbolic::expression v0 = symbolic::CTX( vm.reference_iterator )[ k ];
 				if ( v->equals( v0 ) )
 					continue;
 
@@ -180,7 +148,7 @@ namespace vtil::optimizer
 						register_desc ks = k;
 						ks.bit_offset += i;
 						ks.bit_count = 1;
-						instruction_buffer.push_back( { &ins::mov, { ks, translator << sv } } );
+						instruction_buffer.emplace_back( &ins::mov, ks, translator << sv );
 					}
 					continue;
 				}
@@ -195,16 +163,16 @@ namespace vtil::optimizer
 
 				// Buffer a mov instruction.
 				//
-				instruction_buffer.push_back( { &ins::mov, { k, translator << v } } );
+				instruction_buffer.emplace_back( &ins::mov, k, translator << v );
 			}
 
 			// For each memory state:
 			// -- TODO: Simplify memory state, merge if simplifies, discard if left as is.
 			//
-			for ( auto& [k, _v] : vm.memory_state )
+			for ( auto& [k, v] : vm.memory_state )
 			{
-				auto v = _v.simplify();
-				symbolic::expression v0 = symbolic::make_memory_ex( k, v.size() );
+				v.simplify();
+				symbolic::expression v0 = symbolic::MEMORY( k, v.size() );
 
 				// If value is unchanged, skip.
 				//
@@ -235,15 +203,14 @@ namespace vtil::optimizer
 				// If pointer can be rewritten as $sp + C:
 				//
 				operand base, offset, value;
-				if ( auto displacement = ( k - symbolic::make_register_ex( REG_SP ) ) )
+				if ( auto displacement = ( k - symbolic::CTX[ REG_SP ] ) )
 				{
 					// Buffer a str $sp, c, value.
 					//
-					instruction_buffer.push_back(
-					{
+					instruction_buffer.emplace_back(
 						&ins::str,
-						{ REG_SP, make_imm<int64_t>( *displacement ), translator << v }
-					} );
+						REG_SP, make_imm<int64_t>( *displacement ), translator << v
+					);
 				}
 				else
 				{
@@ -274,31 +241,30 @@ namespace vtil::optimizer
 					if ( base.is_immediate() )
 					{
 						operand tmp = temporary_block.tmp( base.bit_count() );
-						instruction_buffer.push_back( { &ins::mov, { tmp, base } } );
+						instruction_buffer.emplace_back( &ins::mov, tmp, base );
 						base = tmp;
 					}
 
 					// Buffer a str <ptr>, 0, value.
 					//
-					instruction_buffer.push_back(
-					{
+					instruction_buffer.emplace_back(
 						&ins::str,
-						{ base, make_imm( offset ), translator << v }
-					} );
+						base, make_imm( offset ), translator << v
+					);
 				}
 			}
 
 			// Emit entire buffer.
 			//
 			for ( auto& ins : instruction_buffer )
-				temporary_block.push_back( std::move( ins ) );
+				temporary_block.emplace_back( std::move( ins ) );
 
 			// If halting instruction is not at the end of the block, add to temporary block
 			// and continue from the next instruction.
 			//
 			if ( !limit.is_end() )
 			{
-				temporary_block.stream.emplace_back( *limit );
+				temporary_block.np_emplace_back( *limit );
 				it = std::next( limit );
 				temporary_block.sp_index = it.is_end() ? blk->sp_index : it->sp_index;
 			}
@@ -314,21 +280,24 @@ namespace vtil::optimizer
 			vm.reset();
 		}
 
+		// Purge simplifier cache since block iterators are now invalidated 
+		// making the cache also invalid.
+		//
+		symbolic::purge_simplifier_state();
+
 		// Skip rewriting if we produced larger code.
 		//
-		int64_t opt_count = blk->stream.size() - temporary_block.stream.size();
+		int64_t opt_count = blk->size() - temporary_block.size();
 		if ( opt_count <= 0 )
 		{
 			if ( !force ) return 0;
 			opt_count = 0;
 		}
 
-		// Acquire a unique lock and rewrite the stream. Purge simplifier cache since block 
-		// iterators are now invalidated making the cache also invalid.
+		// Rewrite the stream. 
 		//
-		blk->stream = temporary_block.stream;
+		blk->assign( temporary_block );
 		blk->last_temporary_index = temporary_block.last_temporary_index;
-		symbolic::purge_simplifier_cache();
 		return opt_count;
 	}
 };

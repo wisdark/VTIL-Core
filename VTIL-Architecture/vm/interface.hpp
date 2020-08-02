@@ -31,19 +31,26 @@
 
 namespace vtil
 {
+	// List of reasons that might cause the virtual machine to exit.
+	//
+	enum class vm_exit_reason : uint8_t
+	{
+		none =                0,
+		stream_end =          0,
+		alias_failure =       1,
+		high_arithmetic =     2,
+		unknown_instruction = 3
+	};
+
 	// Basic virtual machine interface.
 	//
 	struct vm_interface
 	{
-		// Returns the full register size for the given descriptor.
-		//
-		virtual bitcnt_t size_register( const register_desc& desc ) { return 64; }
-
 		// Reads from the register.
 		//
 		virtual symbolic::expression::reference read_register( const register_desc& desc ) { unreachable(); return {}; }
 		
-		// Reads the given number of bytes from the memory.
+		// Reads the given number of bytes from the memory, returns null if aliasing fails.
 		//
 		virtual symbolic::expression::reference read_memory( const symbolic::expression::reference& pointer, size_t byte_count ) { unreachable(); return {}; }
 
@@ -51,18 +58,18 @@ namespace vtil
 		//
 		virtual void write_register( const register_desc& desc,symbolic::expression::reference value ) { unreachable(); }
 		
-		// Writes the given expression to the memory.
+		// Writes the given expression to the memory, returns false if aliasing fails.
 		//
-		virtual void write_memory( const symbolic::expression::reference& pointer, symbolic::expression::reference value ) { unreachable(); }
+		virtual bool write_memory( const symbolic::expression::reference& pointer, deferred_value<symbolic::expression::reference> value, bitcnt_t size ) { unreachable(); return false; }
+		bool write_memory_v( const symbolic::expression::reference& pointer, symbolic::expression::reference value ) { return write_memory( pointer, value, value.size() ); }
 
 		// Runs the given instruction, returns whether it was successful.
 		//
-		virtual bool execute( const instruction& ins );
+		virtual vm_exit_reason execute( const instruction& ins );
 
 		// Given an iterator from a basic block, executes every instruction until the end of the block 
-		// is reached. If an unknown instruction is hit, breaks out of the loop if specified so, otherwise
-		// ignores it setting the affected registers and memory to undefined values.
+		// is reached. If it exits due to any reason, returns the reason, otherwise ::none.
 		//
-		il_const_iterator run( il_const_iterator it, bool exit_on_ud = true );
+		std::pair<il_const_iterator, vm_exit_reason> run( il_const_iterator it );
 	};
 };

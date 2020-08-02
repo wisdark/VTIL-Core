@@ -41,6 +41,16 @@ namespace vtil { struct tracer; };
 
 namespace vtil::symbolic
 {
+	// Dummy iterator to be used when variable is not being tracked within a block.
+	//
+	inline const il_const_iterator free_form_iterator = [ ] ()
+	{
+		// Create a dummy block with a nop and reference it.
+		//
+		static basic_block dummy_block{ nullptr, 0 };
+		return dummy_block.emplace( dummy_block.begin(), &ins::nop );
+	}();
+
 	// Structure describing how an instruction accesses a variable.
 	//
 	struct access_details
@@ -179,7 +189,7 @@ namespace vtil::symbolic
 
 		// Declare reduction.
 		//
-		REDUCE_TO( at.is_end() ? nullptr : at.operator->(), at.is_valid() ? at.container : nullptr, descriptor, is_branch_dependant );
+		REDUCE_TO( at.block, at.entry, descriptor, is_branch_dependant );
 
 		// Packs all the variables in the expression where it'd be optimal.
 		//
@@ -197,9 +207,97 @@ namespace vtil::symbolic
 		access_details accessed_by( const il_const_iterator& it, tracer* tr = nullptr, bool xblock = false ) const;
 	};
 
-	// Wrappers for quick variable->expression creaton.
+	// Implement lazy wrappers for symbolic variable creation.
 	//
-	static expression make_memory_ex( const pointer& p, bitcnt_t n ) { return variable{ { p ,n } }.to_expression(); }
-	static expression make_register_ex( const register_desc& r, bool unpack = false ) { return variable{ r }.to_expression( unpack ); }
-	static expression make_undefined_ex( bitcnt_t n ) { return variable{ make_undefined( n ) }.to_expression(); }
+	namespace impl
+	{
+		template<typename iterator_type>
+		struct bound_memory
+		{
+			// Self referential temporary used to implictly declare size upon operator[] invokation.
+			//
+			struct size_proxy
+			{
+				const iterator_type& it;
+				bitcnt_t n;
+
+				// operator[](P) reads the given pointer according to the predetermined size.
+				//
+				auto operator[]( const pointer& p ) const { return variable( it, { p, n } ).to_expression(); }
+			};
+
+			// Iterator data is read at.
+			//
+			iterator_type it;
+
+			// Default sizes memory can be accessed with..
+			//
+			const size_proxy qword = { it, 64 };
+			const size_proxy dword = { it, 32 };
+			const size_proxy word =  { it, 16 };
+			const size_proxy byte =  { it, 8 };
+
+			// Iterator copying constructor.
+			//
+			constexpr bound_memory( iterator_type _it ) : it{ _it } {}
+			
+			// Operator()(P, N) is used to read arbitrary size at [P].
+			//
+			auto operator()( const pointer& p, bitcnt_t n ) const { return size_proxy{ it, n }[ p ]; }
+		};
+
+		// Declare global wrapper, by default binding to free form iterator.
+		//
+		struct memory_wrapper : bound_memory<const il_const_iterator&>
+		{
+			// Inherit operator() for arbitrary size read.
+			//
+			using bound_memory::operator();
+
+			// Default construction. 
+			//
+			constexpr memory_wrapper() : bound_memory{ free_form_iterator } {}
+
+			// operator()( T iterator ) binds the memory state to the given iterator.
+			//
+			template<typename T = il_const_iterator>
+			auto operator()( T&& it ) const { return bound_memory<T>{ std::forward<T>( it ) }; }
+		};
+
+		template<typename iterator_type>
+		struct bound_context
+		{
+			// Iterator context is read at.
+			//
+			iterator_type it;
+
+			// Iterator copying constructor.
+			//
+			constexpr bound_context( iterator_type _it ) : it{ _it } {}
+
+			// operator[](R) reads the given register at the current iterator position.
+			//
+			template<typename T>
+			auto operator[]( T&& id ) const { return variable( it, register_cast<std::decay_t<T>>{}( std::forward<T>( id ) ) ).to_expression(); }
+		};
+
+		struct context_wrapper : bound_context<const il_const_iterator&>
+		{
+			// Inherit operator[] for generic read.
+			//
+			using bound_context::operator[];
+
+			// Default construction. 
+			//
+			constexpr context_wrapper() : bound_context{ free_form_iterator } {}
+
+			// operator()( T iterator ) binds the context state to the given iterator.
+			//
+			template<typename T = il_const_iterator>
+			auto operator()( T&& it ) const { return bound_context<T>{ std::forward<T>( it ) }; }
+		};
+	};
+
+	static constexpr impl::memory_wrapper MEMORY = {};
+	static constexpr impl::context_wrapper CTX = {};
 };

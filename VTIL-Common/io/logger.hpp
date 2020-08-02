@@ -34,14 +34,7 @@
 #include <mutex>
 #include <functional>
 #include "formatting.hpp"
-
-// If inline assembly is supported use it, otherwise rely on intrinsics to emit INT3.
-//
-#ifdef _MSC_VER
-	#include <intrin.h>
-#else
-	#define __debugbreak() __asm__ volatile( "int $3" )
-#endif
+#include "../util/intrinsics.hpp"
 
 // [Configuration]
 // Determine which file stream we should use for logging.
@@ -71,16 +64,9 @@ namespace vtil::logger
 		CON_DEF = 7,
 	};
 
-	namespace impl
-	{
-		// Used to mark functions noreturn.
-		//
-		static void noreturn_helper [[noreturn]] () { __debugbreak(); abort(); }
-	};
-
 	// Describes the state of the logging engine.
 	//
-	struct state
+	struct logger_state_t
 	{
 		// Lock of the stream.
 		//
@@ -98,14 +84,16 @@ namespace vtil::logger
 		//
 		int padding_carry = 0;
 
-		// Whether stdout was initialized or not.
+		// Whether to use ANSI escape codes or Windows console API for colors.
+		// Defaults to false on Windows, unless in a Gitlab CI environment.
 		//
-		bool initialized = false;
+		bool ansi_escape_codes = true;
 
-		// Gets the global logger state.
+		// Constructor initializes logger.
 		//
-		static state* get();
+		logger_state_t();
 	};
+	inline logger_state_t logger_state = {};
 
 	// Changes color where possible.
 	//
@@ -123,18 +111,16 @@ namespace vtil::logger
 
 		scope_padding( unsigned u ) : active( 1 )
 		{
-			state::get()->lock.lock();
-			prev = state::get()->padding;
-			state::get()->padding += u;
-			state::get()->lock.unlock();
+			logger_state.lock.lock();
+			prev = logger_state.padding;
+			logger_state.padding += u;
 		}
 
 		void end()
 		{
 			if ( active-- <= 0 ) return;
-			state::get()->lock.lock();
-			state::get()->padding = prev;
-			state::get()->lock.unlock();
+			logger_state.padding = prev;
+			logger_state.lock.unlock();
 		}
 		~scope_padding() { end(); }
 	};
@@ -150,18 +136,16 @@ namespace vtil::logger
 
 		scope_verbosity( bool verbose_output ) : active( 1 )
 		{
-			state::get()->lock.lock();
-			prev = state::get()->mute;
-			state::get()->mute |= !verbose_output;
-			state::get()->lock.unlock();
+			logger_state.lock.lock();
+			prev = logger_state.mute;
+			logger_state.mute |= !verbose_output;
 		}
 
 		void end()
 		{
 			if ( active-- <= 0 ) return;
-			state::get()->lock.lock();
-			state::get()->mute = prev;
-			state::get()->lock.unlock();
+			logger_state.mute = prev;
+			logger_state.lock.unlock();
 		}
 		~scope_verbosity() { end(); }
 	};
@@ -171,24 +155,22 @@ namespace vtil::logger
 	template<typename... params>
 	static int log( console_color color, const char* fmt, params&&... ps )
 	{
-		auto state = state::get();
-
 		// Hold the lock for the critical section guarding ::log.
 		//
-		std::lock_guard g( state->lock );
+		std::lock_guard g( logger_state.lock );
 
 		// Do not execute if logs are disabled.
 		//
-		if ( state->mute ) return 0;
+		if ( logger_state.mute ) return 0;
 
 		// If we should pad this output:
 		//
 		int out_cnt = 0;
-		if ( state->padding > 0 )
+		if ( logger_state.padding > 0 )
 		{
 			// If it was not carried from previous:
 			//
-			if ( int pad_by = state->padding - state->padding_carry )
+			if ( int pad_by = logger_state.padding - logger_state.padding_carry )
 			{
 				for ( int i = 0; i < pad_by; i++ )
 				{
@@ -207,9 +189,9 @@ namespace vtil::logger
 			// Set or clear the carry for next.
 			//
 			if ( fmt[ strlen( fmt ) - 1 ] == '\n' )
-				state->padding_carry = 0;
+				logger_state.padding_carry = 0;
 			else
-				state->padding_carry = state->padding;
+				logger_state.padding_carry = logger_state.padding;
 		}
 
 		// Set to requested color and redirect to printf.
@@ -248,12 +230,12 @@ namespace vtil::logger
 
 		// Acquire the lock.
 		//
-		std::lock_guard _g{ state::get()->lock };
+		std::lock_guard _g{ logger_state.lock };
 		
 		// Reset padding.
 		//
-		int old_padding = state::get()->padding;
-		state::get()->padding = 0;
+		int old_padding = logger_state.padding;
+		logger_state.padding = 0;
 
 		// Print the warning.
 		//
@@ -261,7 +243,7 @@ namespace vtil::logger
 
 		// Restore the padding and return.
 		//
-		state::get()->padding = old_padding;
+		logger_state.padding = old_padding;
 	}
 
 	// Allows to place a hook onto the error function, this is mainly used for
@@ -292,6 +274,6 @@ namespace vtil::logger
 
 		// Break the program. 
 		//
-		impl::noreturn_helper();
+		unreachable();
 	}
 };

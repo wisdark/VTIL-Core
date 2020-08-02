@@ -119,7 +119,6 @@
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="ext\colony.hpp" />
     <ClInclude Include="formats\image_descriptor.hpp" />
     <ClInclude Include="formats\winpe.hpp" />
     <ClInclude Include="arch\amd64\amd64_assembler.hpp" />
@@ -134,26 +133,20 @@
     <ClInclude Include="includes\vtil\io" />
     <ClInclude Include="includes\vtil\math" />
     <ClInclude Include="includes\vtil\amd64" />
-    <ClInclude Include="includes\vtil\query" />
     <ClInclude Include="includes\vtil\utility" />
     <ClInclude Include="io\asserts.hpp" />
+    <ClInclude Include="io\enum_name.hpp" />
     <ClInclude Include="io\formatting.hpp" />
     <ClInclude Include="io\logger.hpp" />
     <ClInclude Include="math\bitwise.hpp" />
     <ClInclude Include="math\operable.hpp" />
     <ClInclude Include="math\operators.hpp" />
-    <ClInclude Include="query\fixed_iterator.hpp" />
-    <ClInclude Include="query\query_descriptor.hpp" />
-    <ClInclude Include="query\range_iterator.hpp" />
-    <ClInclude Include="query\range_iterator_contract.hpp" />
-    <ClInclude Include="query\recursive_view.hpp" />
-    <ClInclude Include="query\view.hpp" />
     <ClInclude Include="util\bitmap.hpp" />
-    <ClInclude Include="util\concept.hpp" />
-    <ClInclude Include="util\constexpr_random.hpp" />
     <ClInclude Include="util\copy_on_write.hpp" />
     <ClInclude Include="util\deferred_value.hpp" />
+    <ClInclude Include="util\detached_queue.hpp" />
     <ClInclude Include="util\enumerator.hpp" />
+    <ClInclude Include="util\relaxed_atomics.hpp" />
     <ClInclude Include="util\trilean.hpp" />
     <ClInclude Include="util\type_helpers.hpp" />
     <ClInclude Include="util\profiler.hpp" />
@@ -161,20 +154,17 @@
     <ClInclude Include="util\static_warning.hpp" />
     <ClInclude Include="util\thread_identifier.hpp" />
     <ClInclude Include="util\multivariate.hpp" />
-    <ClInclude Include="util\dynamic_size.hpp" />
     <ClInclude Include="util\conditional_lock.hpp" />
     <ClInclude Include="util\lt_typeid.hpp" />
-    <ClInclude Include="util\fnv128.hpp" />
     <ClInclude Include="util\fnv64.hpp" />
     <ClInclude Include="util\hashable.hpp" />
-    <ClInclude Include="util\mul128.hpp" />
+    <ClInclude Include="util\intrinsics.hpp" />
     <ClInclude Include="util\numeric_iterator.hpp" />
     <ClInclude Include="util\object_pool.hpp" />
     <ClInclude Include="util\optional_reference.hpp" />
     <ClInclude Include="util\range.hpp" />
     <ClInclude Include="util\reducable.hpp" />
     <ClInclude Include="util\reverse_iterator.hpp" />
-    <ClInclude Include="util\sinkhole.hpp" />
     <ClInclude Include="util\stack_container.hpp" />
     <ClInclude Include="util\zip.hpp" />
     <ClInclude Include="util\variant.hpp" />
@@ -186,7 +176,6 @@
     <ClCompile Include="arch\arm64\arm64_assembler.cpp" />
     <ClCompile Include="arch\arm64\arm64_disassembler.cpp" />
     <ClCompile Include="io\logger.cpp" />
-    <ClCompile Include="math\operators.cpp" />
     <ClCompile Include="util\thread_identifier.cpp" />
     <ClCompile Include="util\variant.cpp" />
   </ItemGroup>
