@@ -31,9 +31,12 @@
 #include <stdint.h>
 #include <array>
 #include <tuple>
-#include <string_view>
 #include <string>
 #include <atomic>
+#include <vector>
+#include <chrono>
+#include <string_view>
+#include <initializer_list>
 #include "intrinsics.hpp"
 
 namespace vtil
@@ -93,9 +96,20 @@ namespace vtil
 	template <template<typename...> typename Tmp, typename T>
 	static constexpr bool is_specialization_v = impl::is_specialization_v<Tmp, std::remove_cvref_t<T>>;
 
+	// Check whether data is stored linearly in the iterable.
+	//
+	template<typename T>
+	static constexpr bool is_linear_iterable_v = 
+	(
+		is_specialization_v<std::vector, T> ||
+		is_specialization_v<std::basic_string, T> ||
+		is_specialization_v<std::initializer_list, T> ||
+		std::is_array_v<T&>
+	);
+
 	// Checks if the given lambda can be evaluated in compile time.
 	//
-	template<typename F, std::enable_if_t<F{}(), int> = 0>
+	template<typename F, std::enable_if_t<(F{}(), true), int> = 0>
 	static constexpr bool is_constexpr( F )   { return true; }
 	static constexpr bool is_constexpr( ... ) { return false; }
 
@@ -104,9 +118,13 @@ namespace vtil
 	template<typename T>
 	concept Integral = std::is_integral_v<T>;
 	template<typename T>
+	concept FloatingPoint = std::is_floating_point_v<T>;
+	template<typename T>
 	concept Trivial = std::is_trivial_v<T>;
 	template<typename T>
 	concept Enum = std::is_enum_v<T>;
+	template<typename T>
+	concept Tuple = is_specialization_v<std::tuple, T> || is_specialization_v<std::pair, T>;
 
 	template<typename T>
 	concept TriviallyCopyable = std::is_trivially_copyable_v<T>;
@@ -119,17 +137,43 @@ namespace vtil
 	template<typename T>
 	concept TriviallyDestructable = std::is_trivially_destructible_v<T>;
 
+	template<typename T>
+	concept DefaultConstructable = std::is_default_constructible_v<T>;
+	template<typename T>
+	concept Destructable = std::is_destructible_v<T>;
+
+	template<typename A, typename B>
+	concept Same = std::is_same_v<A, B>;
 	template <typename From, typename To>
-	concept ConvertibleTo = std::is_convertible_v<From, To>;
+	concept Convertible = std::is_convertible_v<From, To>;
+	template <template<typename...> typename Tmp, typename T>
+	concept Specialization = is_specialization_v<Tmp, T>;
 	template<typename T, typename... Args>
 	concept Constructable = requires { T( std::declval<Args>()... ); };
 	template<typename T, typename X>
 	concept Assignable = requires( T r, X v ) { r = v; };
 
+	// Functor traits.
+	//
+	template<typename T, typename Ret, typename... Args>
+	concept Invocable = requires( T&& x ) { Convertible<decltype( x( std::declval<Args>()... ) ), Ret>; };
+	template<typename T, typename... Args>
+	concept InvocableWith = requires( T&& x ) { x( std::declval<Args>()... ); };
+
+	// Container traits.
+	//
 	template<typename T>
 	concept Iterable = requires( T v ) { std::begin( v ); std::end( v ); };
+	template<typename T>
+	concept ReverseIterable = requires( T v ) { std::rbegin( v ); std::rend( v ); };
+
+	template<Iterable T> 
+	using iterator_reference_type_t = decltype( *std::begin( std::declval<T>() ) );
+	template<Iterable T> 
+	using iterator_value_type_t = typename std::remove_cvref_t<iterator_reference_type_t<T>>;
+
 	template<typename V, typename T>
-	concept TypedIterable = Iterable<T> && requires( T v ) { ConvertibleTo<decltype( *std::begin( v ) ), V&>; };
+	concept TypedIterable = Iterable<T> && Same<std::decay_t<iterator_value_type_t<T>>, std::decay_t<V>>;
 
 	template<typename T>
 	concept DefaultRandomAccessible = requires( T v ) { make_const( v )[ 0 ]; std::size( v ); };
@@ -138,10 +182,41 @@ namespace vtil
 	template<typename T>
 	concept RandomAccessible = DefaultRandomAccessible<T> || CustomRandomAccessible<T>;
 
+	// String traits.
+	//
 	template<typename T>
-	concept Lockable = requires( T& x ) { x.lock(); x.unlock(); };
+	concept CppStringView = is_specialization_v<std::basic_string_view, std::decay_t<T>>;
+	template<typename T>
+	concept CppString = is_specialization_v<std::basic_string, std::decay_t<T>>;
+	template<typename T>
+	concept CString = std::is_pointer_v<std::decay_t<T>> &&
+		( std::is_same_v<std::remove_cv_t<std::remove_pointer_t<std::decay_t<T>>>, char> ||
+		  std::is_same_v<std::remove_cv_t<std::remove_pointer_t<std::decay_t<T>>>, wchar_t> ||
+		  std::is_same_v<std::remove_cv_t<std::remove_pointer_t<std::decay_t<T>>>, char8_t> ||
+		  std::is_same_v<std::remove_cv_t<std::remove_pointer_t<std::decay_t<T>>>, char16_t> ||
+		  std::is_same_v<std::remove_cv_t<std::remove_pointer_t<std::decay_t<T>>>, char32_t> );
+
+	template<typename T>
+	concept String = CppString<T> || CString<T> || CppStringView<T>;
+
+	template<String T>
+	using string_unit_t = typename std::remove_cvref_t<decltype( std::declval<T>()[ 0 ] )>;
+	template<String T>
+	using string_view_t = typename std::basic_string_view<string_unit_t<T>>;
+
+	// Atomicity-related traits.
+	//
+	template<typename T>
+	concept Lockable = requires( T & x ) { x.lock(); x.unlock(); };
 	template<typename T>
 	concept Atomic = is_specialization_v<std::atomic, T>;
+
+	// Chrono traits.
+	//
+	template<typename T>
+	concept Duration = is_specialization_v<std::chrono::duration, T>;
+	template<typename T>
+	concept Timestamp = is_specialization_v<std::chrono::time_point, T>;
 
 	// Constructs a static constant given the type and parameters, returns a reference to it.
 	//
@@ -176,7 +251,7 @@ namespace vtil
 	namespace impl
 	{
 		template<typename T>
-		using decay_ptr = std::conditional_t<std::is_pointer_v<std::remove_cvref_t<T>>, std::remove_cvref_t<T>, T>;
+		using decay_ptr = typename std::conditional_t<std::is_pointer_v<std::remove_cvref_t<T>>, std::remove_cvref_t<T>, T>;
 
 		template<typename T, typename = void> struct make_const {};
 		template<typename T> struct make_const<T&, void>    { using type = std::add_const_t<T>&;    };
@@ -251,6 +326,11 @@ namespace vtil
 	template<typename C, typename R, typename... A>
 	using member_function_t = R(C::*)(A...);
 
+	// Helper used to replace types within parameter packs.
+	//
+	template<typename T, typename O>
+	using swap_type_t = O;
+
 	// Implement helpers for basic series creation.
 	//
 	namespace impl
@@ -258,7 +338,7 @@ namespace vtil
 		template<typename Ti, typename T, Ti... I>
 		static constexpr auto make_expanded_series( T&& f, std::integer_sequence<Ti, I...> )
 		{
-			if constexpr ( std::is_void_v<decltype( f( 0 ) )> )
+			if constexpr ( std::is_void_v<decltype( f( (Ti)0 ) )> )
 				( ( f( I ) ), ... );
 			else
 				return std::array{ f( I )... };
@@ -267,7 +347,7 @@ namespace vtil
 		template<typename Ti, template<auto> typename Tr, typename T, Ti... I>
 		static constexpr auto make_visitor_series( T&& f, std::integer_sequence<Ti, I...> )
 		{
-			if constexpr ( std::is_void_v<decltype( f( type_tag<Tr<0>>{} ) )> )
+			if constexpr ( std::is_void_v<decltype( f( type_tag<Tr<(Ti)0>>{} ) )> )
 				( ( f( type_tag<Tr<I>>{} ) ), ... );
 			else
 				return std::array{ f( type_tag<Tr<I>>{} )... };
@@ -276,7 +356,7 @@ namespace vtil
 		template<typename Ti, typename T, Ti... I>
 		static constexpr auto make_constant_series( T&& f, std::integer_sequence<Ti, I...> )
 		{
-			if constexpr ( std::is_void_v<decltype( f( const_tag<0>{} ) )> )
+			if constexpr ( std::is_void_v<decltype( f( const_tag<(Ti)0>{} ) )> )
 				( ( f( const_tag<I>{} ) ), ... );
 			else
 				return std::array{ f( const_tag<I>{} )... };
@@ -298,102 +378,6 @@ namespace vtil
 		return impl::make_constant_series<decltype( N )>( std::forward<T>( f ), std::make_integer_sequence<decltype( N ), N>{} );
 	}
 
-	// Resets the value of the object referenced.
-	//
-	template<typename T>
-	concept CustomResettable = requires( T& v ) { v.reset(); };
-	template<typename T>
-	concept CustomClearable =  requires( T& v ) { v.clear(); };
-
-	template<typename T>
-	static constexpr auto null_value( T& ref )
-	{
-		// Handle numerics and pointers.
-		//
-		if constexpr ( std::is_arithmetic_v<T> )   { ref = 0;       return true; }
-		else if constexpr ( std::is_pointer_v<T> ) { ref = nullptr; return true; }
-
-		// If it has ::reset or ::clear, invoke it.
-		//
-		else if constexpr ( CustomResettable<T> )  { ref.reset();   return true; }
-		else if constexpr ( CustomClearable<T> )   { ref.clear();   return true; }
-
-		// Try assigning default value:
-		//
-		else if constexpr ( std::is_move_assignable_v<T> || std::is_copy_assignable_v<T> )
-		{
-			// Try constructing using T(void), T(nullptr), T(std::nullopt), T(0).
-			//
-			if constexpr      ( Constructable<T> )                 { ref = T();                 return true; }
-			else if constexpr ( Constructable<T, std::nullptr_t> ) { ref = T( nullptr );        return true; }
-			else if constexpr ( Constructable<T, std::nullopt_t> ) { ref = T( std::nullopt );   return true; }
-			else if constexpr ( Constructable<T, int8_t> )         { ref = T( ( int8_t ) 0 );   return true; }
-			else if constexpr ( Constructable<T, uint8_t> )        { ref = T( ( uint8_t ) 0u ); return true; }
-		}
-		// -- Fail.
-	}
-	template<typename T>
-	concept Nullable = !std::is_void_v<decltype( null_value<T>( std::declval<T&>() ) )>;
-
-	// Almost equivalent behaviour to std::move, but will make sure target is invalidated. If a custom
-	// move constructor does not exist, e.g. a trivial type, will assign default value after moving from it.
-	//
-	template<typename T>
-	[[nodiscard]] static constexpr T possess_value( T& v )
-	{
-		// If trivial type, use exchange (likely to generate single XCHG).
-		//
-		if constexpr ( std::is_integral_v<T> || std::is_floating_point_v<T> || std::is_pointer_v<T> )
-		{
-			return std::exchange( v, ( T ) 0 );
-		}
-		// If trivially move constructable, std::move will not invalidate the target so invoke 
-		// move and invalidate manually here.
-		//
-		else if constexpr ( std::is_move_constructible_v<T> && Nullable<T> )
-		{
-			T value{ std::move( v ) };
-			null_value( v );
-			return value;
-		}
-		// If there is a copy constructor, copy it and then reset.
-		//
-		else if constexpr ( std::is_copy_constructible_v<T> && Nullable<T> )
-		{
-			T value{ v };
-			null_value( v );
-			return value;
-		}
-		// -- Fail.
-	}
-	template<typename T>
-	concept Possessable = !std::is_void_v<decltype( possess_value( std::declval<T&>() ) )>;
-
-	// Gets the size of the given container, 0 if N/A.
-	//
-	template<typename T>
-	static constexpr size_t dynamic_size( T&& o )
-	{
-		if constexpr ( DefaultRandomAccessible<T> )
-			return std::size( o );
-		else if constexpr ( CustomRandomAccessible<T> )
-			return o.size();
-		else if constexpr ( Iterable<T> )
-			return std::distance( std::begin( o ), std::end( o ) );
-		return 0;
-	}
-
-	// Gets the Nth element from the object, void if N/A.
-	//
-	template<typename T>
-	static constexpr decltype( auto ) dynamic_get( T&& o, size_t N ) 
-	{ 
-		if constexpr( RandomAccessible<T> )
-			return o[ N ];
-		else if constexpr ( Iterable<T> )
-			return *std::next( std::begin( o ), N );
-	}
-
 	// Bitcasting.
 	//
 	template<TriviallyCopyable To, TriviallyCopyable From> 
@@ -403,11 +387,17 @@ namespace vtil
 #if HAS_BIT_CAST
 		return __builtin_bit_cast( To, src );
 #else
-		if ( !std::is_constant_evaluated() || std::is_same_v<From, To> )
+		if ( !std::is_constant_evaluated() )
 			return ( const To& ) src;
-		unreachable();
 #endif
+		unreachable();
 	}
 	template<typename T>
 	concept Bitcastable = requires( T x ) { bit_cast<std::array<char, sizeof( T )>, T >( x ); };
+
+	template<typename T>
+	static auto& as_bytes( T& src )
+	{
+		return carry_const( src, ( std::array<char, sizeof( T )>& ) src );
+	}
 };

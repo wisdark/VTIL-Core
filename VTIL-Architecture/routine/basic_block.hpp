@@ -45,11 +45,6 @@
 
 namespace vtil
 {
-	// Type we describe basic block timestamps in.
-	//
-	using epoch_t = uint64_t;
-	static constexpr epoch_t invalid_epoch = ~0;
-
 	// Descriptor for any routine that is being translated.
 	// - Since optimization phase will be done in a single threaded
 	//   fashion, this structure contains no mutexes at all.
@@ -143,7 +138,7 @@ namespace vtil
 				}
 				else
 				{
-					block->epoch++;
+					block->signal_modification();
 					return &entry->value;
 				}
 			}
@@ -175,7 +170,7 @@ namespace vtil
 			{
 				paths_allowed = fwd
 					? &block->owner->get_path( block, dst )
-					: &block->owner->get_path_bwd( block, dst );
+					: &block->owner->get_path( dst, block );
 				is_path_restricted = true;
 				return *this;
 			}
@@ -189,13 +184,11 @@ namespace vtil
 				return *this;
 			}
 
-			// Returns the possible paths the iterator can follow if it reaches it's end.
+			// Enumerates the possible paths the iterator can follow if it reaches it's end.
 			//
-			std::vector<base_iterator> recurse( bool fwd ) const
+			template<typename T>
+			void enum_paths( bool fwd, T&& fn ) const
 			{
-				// Generate a list of possible iterators to continue from:
-				//
-				std::vector<base_iterator> output;
 				for ( basic_block* dst : ( fwd ? block->next : block->prev ) )
 				{
 					// Skip if path is restricted and this path is not allowed.
@@ -207,14 +200,15 @@ namespace vtil
 					}
 
 					// Otherwise create the new iterator inheriting the path 
-					// restrictions of current iterator, and save it.
+					// restrictions of current iterator, and invoke enumerator.
 					//
-					auto& it = output.emplace_back();
+					base_iterator it;
 					it = fwd ? dst->begin() : dst->end();
 					it.paths_allowed = paths_allowed;
 					it.is_path_restricted = is_path_restricted;
+					if ( enumerator::invoke( fn, it ).should_break )
+						return;
 				}
-				return output;
 			}
 
 			// Conversion to string.
@@ -284,6 +278,7 @@ namespace vtil
 		// since their last read from it in an easy and fast way.
 		//
 		epoch_t epoch;
+		void signal_modification() { ++epoch; if ( owner ) owner->signal_modification(); }
 
 		// Creates a new block bound to a new routine with the given parameters.
 		//
@@ -297,7 +292,7 @@ namespace vtil
 		// Basic constructor and destructor, should be invoked via ::fork and ::begin, reserved for internal use.
 		//
 		basic_block( routine* owner, vip_t entry_vip ) 
-			: owner( owner ), entry_vip( entry_vip ), epoch( make_random<uint64_t>() ) {}
+			: owner( owner ), entry_vip( entry_vip ), epoch( make_random<epoch_t>() ) {}
 		basic_block( const basic_block& o )
 			: owner( o.owner ), entry_vip( o.entry_vip ), next( o.next ), prev( o.prev ),
 			  sp_index( o.sp_index ), sp_offset( o.sp_offset ), last_temporary_index( o.last_temporary_index ),
@@ -370,15 +365,14 @@ namespace vtil
 		WRAP_LAZY( tge );    WRAP_LAZY( te );       WRAP_LAZY( tne );    WRAP_LAZY( tle );    
 		WRAP_LAZY( tl );     WRAP_LAZY( tug );      WRAP_LAZY( tuge );   WRAP_LAZY( tule );   
 		WRAP_LAZY( tul );    WRAP_LAZY( js );       WRAP_LAZY( jmp );    WRAP_LAZY( vexit );  
-		WRAP_LAZY( vemit );  WRAP_LAZY( vxcall );   WRAP_LAZY( nop );    WRAP_LAZY( vpinr );  
-		WRAP_LAZY( vpinw );  WRAP_LAZY( vpinrm );   WRAP_LAZY( vpinwm );
+		WRAP_LAZY( vemit );  WRAP_LAZY( vxcall );   WRAP_LAZY( nop );    WRAP_LAZY( sfence );
+		WRAP_LAZY( lfence ); WRAP_LAZY( vpinr );    WRAP_LAZY( vpinw );  WRAP_LAZY( vpinrm );   
+		WRAP_LAZY( vpinwm );
 #undef WRAP_LAZY
 
-		// Memory barriers.
+		// MFENCE => { LFENCE + SFENCE }.
 		//
-		basic_block* vsfence() { return vpinrm( UNDEFINED, 0ull ); }
-		basic_block* vlfence() { return vpinwm( UNDEFINED, 0ull ); }
-		basic_block* vmfence() { return vsfence()->vlfence(); } 
+		basic_block* vmfence() { return lfence()->sfence(); } 
 
 		// Queues a stack shift.
 		//
@@ -404,8 +398,8 @@ namespace vtil
 		size_t size() const              { return instruction_count; }
 		const instruction& back() const  { dassert( tail ); return tail->value; }
 		const instruction& front() const { dassert( head ); return head->value; }
-		instruction& wback()             { dassert( tail ); epoch++; return tail->value; }
-		instruction& wfront()            { dassert( head ); epoch++; return head->value; }
+		instruction& wback()             { dassert( tail ); signal_modification(); return tail->value; }
+		instruction& wfront()            { dassert( head ); signal_modification(); return head->value; }
 		iterator begin()                 { return { this, head }; }
 		iterator end()                   { return { this, nullptr }; }
 		const_iterator begin() const     { return { this, head }; }
@@ -474,9 +468,9 @@ namespace vtil
 		// Helper used to drop const-qualifiers of an iterator when we have a mutable 
 		// reference to the block itself.
 		//
-		iterator acquire( const_iterator&& it )             { dassert( it.block == this ); return ( iterator&& ) it; }
-		iterator& acquire( const_iterator& it )             { dassert( it.block == this ); return ( iterator& ) it; }
-		const iterator& acquire( const const_iterator& it ) { dassert( it.block == this ); return ( const iterator& ) it; }
+		iterator acquire( const_iterator&& it )             { dassert( !it.block || it.block == this ); return ( iterator&& ) it; }
+		iterator& acquire( const_iterator& it )             { dassert( !it.block || it.block == this ); return ( iterator& ) it; }
+		const iterator& acquire( const const_iterator& it ) { dassert( !it.block || it.block == this ); return ( const iterator& ) it; }
 	
 	protected:
 		// Wrappers for instruction construction and deconstruction.

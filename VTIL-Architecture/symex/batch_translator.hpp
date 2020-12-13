@@ -37,6 +37,7 @@ namespace vtil
 		// Block we are translating into.
 		//
 		basic_block* block;
+		il_const_iterator it_sp;
 
 		// The expression cache.
 		//
@@ -44,9 +45,10 @@ namespace vtil
 			               symbolic::expression::reference::hasher, 
 			               symbolic::expression::reference::if_identical> translation_cache;
 		
-		// Constructed by binding to a block.
+		// Constructed by binding to a block and optionally a reference to 
+		// the point REG_SP will be calculated from.
 		//
-		batch_translator( basic_block* block ) : block( block ) {}
+		batch_translator( basic_block* block, il_const_iterator it_sp = symbolic::free_form_iterator ) : block( block ), it_sp( std::move( it_sp ) ) {}
 
 		// operator<< is used to translate expressions.
 		//
@@ -62,7 +64,8 @@ namespace vtil
 				op = translate_expression(
 					exp,
 					block,
-					[ & ] ( auto& exp, auto* block ) { return *this << exp; }
+					[ & ] ( auto& exp, auto* block ) { return *this << exp; },
+					it_sp
 				);
 			}
 			fassert( exp.size() == op.bit_count() );

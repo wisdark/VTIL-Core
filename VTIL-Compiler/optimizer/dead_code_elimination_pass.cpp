@@ -31,29 +31,21 @@
 
 namespace vtil::optimizer
 {
-	// Returns whether the instruction is a semantic equivalent of NOP or not.
-	//
-	static bool is_semantic_nop( const instruction& ins )
-	{
-		if ( ins.base == &ins::mov ||
-			 ins.base == &ins::movsx )
-		{
-			if ( ins.operands[ 0 ] == ins.operands[ 1 ] )
-				return true;
-		}
-
-		return false;
-	}
-
 	// Implement the pass.
 	//
 	size_t dead_code_elimination_pass::pass( basic_block* blk, bool xblock )
 	{
-		size_t counter = 0;
-
 		if ( blk->empty() )
 			return 0;
 
+		std::vector<il_const_iterator> delete_list = {};
+
+		// Acquire a shared lock.
+		//
+		cnd_shared_lock lock( mtx, xblock );
+
+		// Iterate backwards.
+		//
 		auto [rbegin, rend] = reverse_iterators( *blk );
 		for ( auto it = rbegin; it != rend; ++it )
 		{
@@ -65,7 +57,7 @@ namespace vtil::optimizer
 			// Check if results are used if not semantically nop.
 			//
 			bool used = false;
-			if ( !is_semantic_nop( *it ) )
+			if ( !aux::is_semantic_nop( *it ) )
 			{
 				// Check register results:
 				//
@@ -100,27 +92,24 @@ namespace vtil::optimizer
 			//
 			if ( !used )
 			{
+				// Set to nop, will be invalid instruction, but can be atomically assigned.
+				//
 				( +it )->base = &ins::nop;
-				( +it )->operands = {};
-				counter++;
+				delete_list.emplace_back( it );
 			}
 		}
 
-		// Purge simplifier cache since block iterators are invalided thus cache may fail.
+		// Acquire lock and delete instructions at once.
+		//
+		lock = {};
+		cnd_unique_lock _g( mtx, xblock );
+		for ( auto it : delete_list )
+			blk->erase( it );
+
+		// Purge simplifier cache since block iterators are invalided thus cache may fail,
+		// return deleted instruction count as result.
 		//
 		ctrace.flush( blk );
-		if ( counter != 0 )
-			symbolic::purge_simplifier_state();
-
-		// Remove all nops.
-		//
-		for ( auto it = blk->begin(); !it.is_end(); )
-		{
-			if ( !it->is_volatile() && it->base == &ins::nop )
-				it = blk->erase( it );
-			else
-				it++;
-		}
-		return counter;
+		return delete_list.size();
 	}
 };

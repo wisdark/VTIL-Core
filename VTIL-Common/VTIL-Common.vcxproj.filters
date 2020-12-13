@@ -145,9 +145,6 @@
     <ClInclude Include="util\random.hpp">
       <Filter>Utility</Filter>
     </ClInclude>
-    <ClInclude Include="util\profiler.hpp">
-      <Filter>Utility</Filter>
-    </ClInclude>
     <ClInclude Include="util\bitmap.hpp">
       <Filter>Utility</Filter>
     </ClInclude>
@@ -173,6 +170,36 @@
       <Filter>Utility</Filter>
     </ClInclude>
     <ClInclude Include="io\enum_name.hpp">
+      <Filter>I/O</Filter>
+    </ClInclude>
+    <ClInclude Include="util\vtype_traits.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\function_view.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="io\fileio.hpp">
+      <Filter>I/O</Filter>
+    </ClInclude>
+    <ClInclude Include="util\literals.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\time.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\transform_parallel.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\finally.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="util\task.hpp">
+      <Filter>Utility</Filter>
+    </ClInclude>
+    <ClInclude Include="io\strong_formatting.hpp">
+      <Filter>I/O</Filter>
+    </ClInclude>
+    <ClInclude Include="io\table_view.hpp">
       <Filter>I/O</Filter>
     </ClInclude>
   </ItemGroup>

@@ -41,10 +41,10 @@
 	#define	VTIL_SYMEX_SELFGEN_SIGMATCH_DEPTH_LIM   3
 #endif
 #ifndef VTIL_SYMEX_LRU_CACHE_SIZE
-	#define VTIL_SYMEX_LRU_CACHE_SIZE               0x40000
+	#define VTIL_SYMEX_LRU_CACHE_SIZE               0x10000
 #endif
 #ifndef VTIL_SYMEX_LRU_PRUNE_COEFF
-	#define VTIL_SYMEX_LRU_PRUNE_COEFF              0.5
+	#define VTIL_SYMEX_LRU_PRUNE_COEFF              0.35
 #endif
 namespace vtil::symbolic
 {
@@ -91,11 +91,46 @@ namespace vtil::symbolic
 
 		// Declare custom hash / equivalence checks hijacking the hash map iteration.
 		//
-		struct cache_value;
+		struct cache_value
+		{
+			// Type of the queue key.
+			//
+			using queue_key = typename detached_queue<cache_value>::key;
+
+			// Entry itself:
+			//
+			expression::reference result = {};
+			bool is_simplified = false;
+
+			// Implementation details:
+			//
+			int32_t lock_count = 0;
+			queue_key lru_key = {};
+			queue_key spec_key = {};
+
+			// Stores a type erased iterator since we don't know the map type yet, only
+			// an issue with libstdc++ but oh well.
+			// - Ref: https://github.com/vtil-project/VTIL-Core/issues/41
+			//
+			std::unordered_map<uint64_t, uint64_t>::const_iterator _iterator = {};
+			
+			template<typename map_type>
+			auto& iterator()
+			{
+				using iterator_type = typename map_type::const_iterator;
+				static_assert( sizeof( iterator_type ) == sizeof( _iterator ), "Iterator sizes mismatch." );
+				return ( iterator_type& ) _iterator;
+			}
+			template<typename map_type>
+			const auto& iterator() const { return make_mutable( this )->template iterator<map_type>(); }
+		};
+
+
 		struct signature_hasher
 		{
 			size_t operator()( const expression::reference& ref ) const noexcept { return ref->signature.hash(); }
 		};
+
 		struct cache_scanner
 		{
 			struct sigscan_result
@@ -103,8 +138,7 @@ namespace vtil::symbolic
 				const expression::reference& key;
 				cache_value* match = nullptr;
 				expression::uid_relation_table table;
-
-				size_t diff = 0;
+				int64_t diff = 0;
 			};
 			inline static thread_local sigscan_result* sigscan = nullptr;
 
@@ -163,22 +197,6 @@ namespace vtil::symbolic
 		// Cache entry and map type.
 		//
 		using cache_map = std::unordered_map<expression::reference, cache_value, signature_hasher, cache_scanner>;
-		struct cache_value
-		{
-			using queue_key = typename detached_queue<cache_value>::key;
-
-			// Entry itself:
-			//
-			expression::reference result = {};
-			bool is_simplified = false;
-
-			// Implementation details:
-			//
-			int32_t lock_count = 0;
-			queue_key lru_key = {};
-			queue_key spec_key = {};
-			cache_map::const_iterator iterator = {};
-		};
 
 		// Whether we're executing speculatively or not.
 		//
@@ -192,6 +210,14 @@ namespace vtil::symbolic
 		// Cache map.
 		//
 		cache_map map{ max_cache_entries };
+
+		// Disallow copy.
+		//
+		simplifier_state() {}
+		simplifier_state( simplifier_state&& ) = default;
+		simplifier_state( const simplifier_state& ) = delete;
+		simplifier_state& operator=( simplifier_state&& ) = default;
+		simplifier_state& operator=( const simplifier_state& ) = delete;
 
 		// Resets the local cache.
 		//
@@ -251,8 +277,9 @@ namespace vtil::symbolic
 		{
 			fassert( value->lock_count == 0 );
 			lru_queue.erase( &value->lru_key );
-			spec_queue.erase_if( &value->spec_key );
-			map.erase( std::move( value->iterator ) );
+			if( value->spec_key.is_valid() )
+				spec_queue.erase( &value->spec_key );
+			map.erase( std::move( value->template iterator<cache_map>() ) );
 		}
 
 		// Initializes a new entry in the map.
@@ -261,7 +288,7 @@ namespace vtil::symbolic
 		{
 			// Save the iterator.
 			//
-			entry_it->second.iterator = entry_it;
+			entry_it->second.template iterator<cache_map>() = entry_it;
 
 			// If simplifying speculatively, link to tail.
 			//
@@ -325,6 +352,10 @@ namespace vtil::symbolic
 			auto [it, inserted] = map.emplace( exp, make_default<cache_value>() );
 			cache_scanner::sigscan = nullptr;
 
+			// Speculatively lock the entry.
+			//
+			it->second.lock_count++;
+
 			// If we inserted a new entry:
 			//
 			if ( inserted )
@@ -386,16 +417,36 @@ namespace vtil::symbolic
 				lru_queue.erase( &it->second.lru_key );
 			}
 
+			// Remove speculative lock.
+			//
+			it->second.lock_count--;
+
 			// Insert into the tail of use list.
 			//
 			lru_queue.emplace_back( &it->second.lru_key );
 			return { it->second.result, it->second.is_simplified, !inserted, &it->second };
 		}
 	};
-	static thread_local simplifier_state_ptr local_state = simplifier_state_allocator{}();
-	void purge_simplifier_state() { local_state->reset(); }
-	simplifier_state_ptr swap_simplifier_state( simplifier_state_ptr p ) { return std::exchange( local_state, p ? std::move( p ) : simplifier_state_allocator{}( ) ); }
 
+	static task_local( simplifier_state ) local_state;
+	void purge_simplifier_state() { if( local_state.init ) local_state->reset(); }
+
+	simplifier_state_ptr swap_simplifier_state( simplifier_state_ptr p ) 
+	{ 
+		if ( p )
+		{
+			std::swap( *p, *local_state );
+			return p;
+		}
+		else if( local_state.init )
+		{
+			return { new simplifier_state( local_state.steal() ), simplifier_state_deleter{} };
+		}
+		else
+		{
+			return nullptr;
+		}
+	}
 	void simplifier_state_deleter::operator()( simplifier_state* p ) const noexcept { delete p; }
 	simplifier_state_ptr simplifier_state_allocator::operator()() const noexcept    { return { new simplifier_state, simplifier_state_deleter{} }; }
 
@@ -456,7 +507,7 @@ namespace vtil::symbolic
 
 	// Checks if the expression can be interpreted as a vector-boolean expression.
 	//
-	static std::pair<bool, expression::reference> match_boolean_expression( const expression::reference& exp )
+	static std::pair<bool, expression::weak_reference> match_boolean_expression( const expression::reference& exp )
 	{
 		switch ( exp->op )
 		{
@@ -485,11 +536,11 @@ namespace vtil::symbolic
 				auto [m2, p2] = match_boolean_expression( exp->rhs );
 				if ( !m2 ) return { false, nullptr };
 
-				if ( !p2 ) return { true, std::move( p1 ) };
-				if ( !p1 ) return { true, std::move( p2 ) };
+				if ( !p2 ) return { true, p1 };
+				if ( !p1 ) return { true, p2 };
 
 				if ( p1->uid == p2->uid )
-					return { true, std::move( p1 ) };
+					return { true, p1 };
 				else
 					return { false, nullptr };
 			}
@@ -523,10 +574,10 @@ namespace vtil::symbolic
 
 		// Apply each mask if not no-op.
 		//
-		expression::reference&    exp_new = uid_base;
-		if ( and_mask != ~0ull )  exp_new = exp_new & expression{ and_mask, exp->size() };
-		if ( xor_mask )           exp_new = exp_new ^ expression{ xor_mask, exp->size() };
-		if ( or_mask )            exp_new = exp_new | expression{ or_mask,  exp->size() };
+		expression::reference exp_new = uid_base.make_shared();
+		if ( and_mask != ~0ull )  exp_new &= expression{ and_mask, exp->size() };
+		if ( xor_mask )           exp_new ^= expression{ xor_mask, exp->size() };
+		if ( or_mask )            exp_new |= expression{ or_mask,  exp->size() };
 
 		// If complexity was higher or equal, fail.
 		//

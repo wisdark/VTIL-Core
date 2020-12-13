@@ -72,11 +72,45 @@ namespace vtil::symbolic
 
 		// Cast to bool to check if non-null access.
 		//
-		explicit operator bool() const { return bit_count != 0; }
+		operator bool() const { return bit_count != 0; }
 
 		// Check if details are unknown.
 		//
 		bool is_unknown() { return unknown; }
+
+		// Combines two access details together.
+		//
+		access_details operator+( const access_details& o ) const
+		{
+			if ( !o ) return *this;
+			if ( !*this ) return o;
+
+			bitcnt_t bmax = std::max( o.bit_offset + o.bit_count, bit_offset + bit_count );
+			bitcnt_t bmin = std::max( o.bit_offset, bit_offset );
+
+			return {
+				.bit_offset = bmin,
+				.bit_count =  bmax - bmin,
+				.read =       read  || o.read,
+				.write =      write || o.write,
+				.unknown =    unknown || o.unknown
+			};
+		}
+		access_details& operator+=( const access_details& o ) { return *this = ( o + *this ); }
+
+		// String conversion.
+		//
+		std::string to_string() const
+		{
+			if ( bit_count == 0 ) return format::str( "None" );
+			const char* str;
+			if ( read && write ) str = "RW";
+			else if ( read )     str = "R";
+			else if ( write )    str = "W";
+			else                 str = "?";
+			if ( unknown )        return format::str( "Unknown [%s]", str );
+			return format::str( "[%s] @%d:%d", str, bit_count, bit_offset );
+		}
 	};
 
 	// A pseudo single-static-assignment variable describing the state of a 

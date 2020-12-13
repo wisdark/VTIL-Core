@@ -116,8 +116,8 @@ namespace vtil
 
 		// Decay to weak identifier.
 		//
-		constexpr weak_id weaken() const { return { flags, combined_id }; }
-		constexpr operator weak_id() const { return weaken(); }
+		weak_id weaken() const { return { flags, combined_id }; }
+		operator weak_id() const { return weaken(); }
 
 		// Flags of the current register, as described in "enum register_flag".
 		//
@@ -165,6 +165,9 @@ namespace vtil
 		{
 			is_valid( true );
 		}
+
+		template<Enum T>
+		register_desc( T v ) : register_desc( register_cast<T>()( v ) ) { }
 
 		// Returns whether the descriptor is valid or not.
 		//
@@ -262,7 +265,7 @@ namespace vtil
 		//
 		constexpr bool overlaps( const register_desc& o ) const
 		{ 
-			if ( combined_id != o.combined_id || flags != o.flags )
+			if ( local_id != o.local_id || architecture != o.architecture || flags != o.flags )
 				return false;
 			return get_mask() & o.get_mask();
 		}
@@ -271,7 +274,7 @@ namespace vtil
 		//
 		constexpr register_desc select( bitcnt_t new_bit_count, bitcnt_t new_bit_offset ) const
 		{
-			return { weaken(), new_bit_count, new_bit_offset };
+			return { flags, local_id, new_bit_count, new_bit_offset, architecture };
 		}
 		constexpr register_desc rebase( bitcnt_t new_bit_offset ) const
 		{

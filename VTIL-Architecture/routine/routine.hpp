@@ -27,10 +27,9 @@
 //
 #pragma once
 #include <vtil/utility>
-#include <map>
 #include <mutex>
-#include <type_traits>
 #include <functional>
+#include <unordered_map>
 #include "../arch/identifier.hpp"
 #include "instruction.hpp"
 #include "call_convention.hpp"
@@ -41,10 +40,19 @@ namespace vtil
 	//
 	struct basic_block;
 
+	// Type we describe timestamps in.
+	//
+	using epoch_t = uint64_t;
+	static constexpr epoch_t invalid_epoch = ~0;
+
 	// Declare types of path containers.
 	//
 	using path_set = std::unordered_set<const basic_block*, hasher<>>;
-	using path_map = std::unordered_map<const basic_block*, std::unordered_map<const basic_block*, path_set, hasher<>>, hasher<>>;
+	using path_map = std::unordered_map<
+		const basic_block*, 
+		std::unordered_map<const basic_block*, path_set, hasher<>>, 
+		hasher<>
+	>;
 
 	// Descriptor for any routine that is being translated.
 	//
@@ -64,29 +72,13 @@ namespace vtil
 		//
 		architecture_identifier arch_id;
 
-		// Constructed from architecture identifier.
-		//
-		routine( architecture_identifier arch_id ) 
-			: arch_id( arch_id ) 
-		{
-			switch ( arch_id )
-			{
-				case architecture_arm64:   routine_convention =    arm64::default_call_convention;
-				                           subroutine_convention = arm64::default_call_convention; break;
-				case architecture_amd64:   routine_convention =    amd64::default_call_convention;
-				                           subroutine_convention = amd64::default_call_convention; break;
-				case architecture_virtual: routine_convention =    { .purge_stack = true };
-				                           subroutine_convention = { .purge_stack = true }; break;
-			}
-		};
-
 		// Cache of explored blocks, mapping virtual instruction pointer to the basic block structure.
 		//
-		std::map<vip_t, basic_block*> explored_blocks;
+		std::unordered_map<vip_t, basic_block*> explored_blocks;
 
 		// Cache of paths from block A to block B.
 		//
-		path_map path_cache[ 2 ];
+		path_map path_cache;
 
 		// Reference to the first block, entry point.
 		// - Can be accessed without acquiring the mutex as it will be assigned strictly once.
@@ -116,6 +108,53 @@ namespace vtil
 		// Multivariate runtime context.
 		//
 		multivariate<routine> context = {};
+		
+		// Cache of depth ordered lists.
+		//
+		struct depth_placement
+		{
+			size_t level_dependency;
+			size_t level_depth;
+			const basic_block* block;
+		};
+		struct depth_ordered_list
+		{
+			epoch_t epoch = invalid_epoch;
+			std::vector<routine::depth_placement> list;
+		};
+		mutable depth_ordered_list depth_ordered_list_cache[ 2 ];
+
+		// Epoch provided to allow external entities determine if the routine 
+		// is modified or not since their last read from it in an easy and fast way.
+		//
+		epoch_t cfg_epoch;
+		relaxed_atomic<epoch_t> epoch;
+		void signal_modification() { ++epoch; }
+		void signal_cfg_modification() { ++epoch; ++cfg_epoch; }
+
+		// Constructed from architecture identifier.
+		//
+		routine( architecture_identifier arch_id ) 
+			: arch_id( arch_id ), epoch( make_random<epoch_t>() ), cfg_epoch( make_random<epoch_t>() )
+		{
+			switch ( arch_id )
+			{
+				case architecture_arm64:   routine_convention =    arm64::default_call_convention;
+				                           subroutine_convention = arm64::default_call_convention; break;
+				case architecture_amd64:   routine_convention =    amd64::default_call_convention;
+				                           subroutine_convention = amd64::default_call_convention; break;
+				case architecture_virtual: routine_convention =    { .purge_stack = true };
+				                           subroutine_convention = { .purge_stack = true }; break;
+			}
+		};
+
+		// Wrap around explored blocks list, thread-safety left to caller.
+		//
+		auto begin() { return explored_blocks.begin(); }
+		auto end()   { return explored_blocks.end(); }
+		auto begin() const { return explored_blocks.cbegin(); }
+		auto end() const   { return explored_blocks.cend(); }
+		auto size() const  { return explored_blocks.size(); }
 
 		// Helpers for the allocation of unique internal registers.
 		//
@@ -158,23 +197,21 @@ namespace vtil
 			spec_subroutine_conventions[ vip ] = cc;
 		}
 
-		// Gets (forward/backward) path from src to dst.
+		// Gets path from src to dst.
 		//
 		const path_set& get_path( const basic_block* src, const basic_block* dst ) const;
-		const path_set& get_path_bwd( const basic_block* src, const basic_block* dst ) const;
 
-		// Simple helpers to check if (forward/backward) path from src to dst exists.
+		// Simple helpers to check if path from src to dst exists.
 		//
 		bool has_path( const basic_block* src, const basic_block* dst ) const;
-		bool has_path_bwd( const basic_block* src, const basic_block* dst ) const;
 
 		// Checks whether the block is in a loop.
 		//
 		bool is_looping( const basic_block* blk ) const;
 
-		// Explores the given path, reserved for internal use.
+		// Explores the paths for the block, reserved for internal use.
 		//
-		void explore_path( const basic_block* src, const basic_block* dst );
+		void explore_paths( const basic_block* blk );
 
 		// Flushes the path cache, reserved for internal use.
 		//
@@ -201,6 +238,15 @@ namespace vtil
 		void enumerate( callback fn, const iterator_type& src, const iterator_type& dst = {} ) const;
 		template<typename callback, typename iterator_type>
 		void enumerate_bwd( callback fn, const iterator_type& src, const iterator_type& dst = {} ) const;
+
+		// Gets a list of exits.
+		//
+		std::vector<const basic_block*> get_exits() const;
+
+		// Gets a list of depth ordered block lists that can be analysed in parallel with 
+		// weakened dependencies on previous level.
+		//
+		std::vector<depth_placement> get_depth_ordered_list( bool fwd ) const;
 
 		// Provide basic statistics about the complexity of the routine.
 		//

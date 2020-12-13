@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|x64">
@@ -136,8 +136,11 @@
     <ClInclude Include="includes\vtil\utility" />
     <ClInclude Include="io\asserts.hpp" />
     <ClInclude Include="io\enum_name.hpp" />
+    <ClInclude Include="io\fileio.hpp" />
     <ClInclude Include="io\formatting.hpp" />
     <ClInclude Include="io\logger.hpp" />
+    <ClInclude Include="io\strong_formatting.hpp" />
+    <ClInclude Include="io\table_view.hpp" />
     <ClInclude Include="math\bitwise.hpp" />
     <ClInclude Include="math\operable.hpp" />
     <ClInclude Include="math\operators.hpp" />
@@ -146,10 +149,15 @@
     <ClInclude Include="util\deferred_value.hpp" />
     <ClInclude Include="util\detached_queue.hpp" />
     <ClInclude Include="util\enumerator.hpp" />
+    <ClInclude Include="util\finally.hpp" />
+    <ClInclude Include="util\function_view.hpp" />
+    <ClInclude Include="util\literals.hpp" />
+    <ClInclude Include="util\task.hpp" />
+    <ClInclude Include="util\transform_parallel.hpp" />
     <ClInclude Include="util\relaxed_atomics.hpp" />
+    <ClInclude Include="util\time.hpp" />
     <ClInclude Include="util\trilean.hpp" />
     <ClInclude Include="util\type_helpers.hpp" />
-    <ClInclude Include="util\profiler.hpp" />
     <ClInclude Include="util\random.hpp" />
     <ClInclude Include="util\static_warning.hpp" />
     <ClInclude Include="util\thread_identifier.hpp" />
@@ -166,6 +174,7 @@
     <ClInclude Include="util\reducable.hpp" />
     <ClInclude Include="util\reverse_iterator.hpp" />
     <ClInclude Include="util\stack_container.hpp" />
+    <ClInclude Include="util\vtype_traits.hpp" />
     <ClInclude Include="util\zip.hpp" />
     <ClInclude Include="util\variant.hpp" />
   </ItemGroup>

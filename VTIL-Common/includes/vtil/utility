@@ -2,6 +2,7 @@
 #include "../../util/copy_on_write.hpp"
 #include "../../util/thread_identifier.hpp"
 #include "../../util/lt_typeid.hpp"
+#include "../../util/vtype_traits.hpp"
 #include "../../util/fnv64.hpp"
 #include "../../util/hashable.hpp"
 #include "../../util/intrinsics.hpp"
@@ -17,7 +18,7 @@
 #include "../../util/multivariate.hpp"
 #include "../../util/static_warning.hpp"
 #include "../../util/random.hpp"
-#include "../../util/profiler.hpp"
+#include "../../util/time.hpp"
 #include "../../util/bitmap.hpp"
 #include "../../util/type_helpers.hpp"
 #include "../../util/enumerator.hpp"
@@ -25,13 +26,7 @@
 #include "../../util/trilean.hpp"
 #include "../../util/detached_queue.hpp"
 #include "../../util/relaxed_atomics.hpp"
-
-// VTIL namespace should be able to use literals by default without having to include it.
-//
-#include <chrono>
-#include <string>
-namespace vtil
-{
-	using namespace std::literals::string_literals;
-	using namespace std::literals::chrono_literals;
-};
+#include "../../util/function_view.hpp"
+#include "../../util/literals.hpp"
+#include "../../util/transform_parallel.hpp"
+#include "../../util/finally.hpp"

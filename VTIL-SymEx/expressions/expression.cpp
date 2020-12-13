@@ -843,7 +843,10 @@ namespace vtil::symbolic
 
 		// Check if properties match.
 		//
-		if ( a->signature != b->signature || ( same_depth && a->depth != b->depth ) || a->size() != b->size() )
+		if ( ( same_depth ? a->signature != b->signature : b->signature.can_match( a->signature ) ) || 
+			 ( same_depth ? a->depth != b->depth : a->depth > b->depth ) ||
+			 a->op != b->op ||
+			 a->size() != b->size() )
 			return false;
 
 		// If variable:
@@ -927,71 +930,23 @@ namespace vtil::symbolic
 		return std::nullopt;
 	}
 
-	// Calculates the x values.
+	// Checks if the expression given is a subexpression of the current one.
 	//
-	std::array<uint64_t, VTIL_SYMEX_XVAL_KEYS> expression::xvalues() const
+	bool expression::contains( const expression& o ) const
 	{
-		std::array<uint64_t, VTIL_SYMEX_XVAL_KEYS> result;
-		
-		// If binary operation:
+		// Depth based traversal fast-path.
 		//
-		if ( lhs )
-		{
-			// Determine rhs mask.
-			//
-			uint64_t rhs_mask;
-			switch ( op )
-			{
-				case math::operator_id::shift_right:
-				case math::operator_id::shift_left:
-				case math::operator_id::rotate_right:
-				case math::operator_id::rotate_left:
-				case math::operator_id::bit_test:     rhs_mask = rhs->is_variable() 
-					                                               ? lhs->size() - 1 : ~0ull; break;
-				default:                              rhs_mask = ~0ull;                       break;
-			}
+		if ( depth < o.depth ) 
+			return false;
 
-			// Evalute based on lhs's and rhs's xvalues.
-			//
-			auto xlhs = lhs->xvalues();
-			auto xrhs = rhs->xvalues();
-			for ( auto [out, vlhs, vrhs] : zip( result, xlhs, xrhs ) )
-				out = math::evaluate( op, lhs->size(), vlhs, rhs->size(), vrhs & rhs_mask ).first;
-		}
-		// If unary operation:
+		// If same depth, redirect to is_identical.
 		//
-		else if( rhs )
-		{
-			// Evalute based on rhs's xvalues.
-			//
-			auto xrhs = rhs->xvalues();
-			for ( auto [out, vrhs] : zip( result, xrhs ) )
-				out = math::evaluate( op, 0, 0, rhs->size(), vrhs ).first;
-		}
-		// If constant:
-		//
-		else if ( is_constant() )
-		{
-			// All x values are equivalent to the actual value.
-			//
-			result.fill( *value.get() );
-		}
-		// If variable:
-		//
-		else if ( is_variable() )
-		{
-			static constexpr auto keys = make_crandom_n<VTIL_SYMEX_XVAL_KEYS>();
+		if ( depth == o.depth )
+			return is_identical( o );
 
-			// Generate x values based on the hash.
-			//
-			for ( auto [out, key] : zip( result, keys ) )
-				out = ( hash_value ^ key ) & value.value_mask();
-		}
-		else
-		{
-			unreachable();
-		}
-		return result;
+		// Check child-nodes where possible.
+		//
+		return rhs && ( rhs->contains( o ) || ( lhs && lhs->contains( o ) ) );
 	}
 
 	// Converts to human-readable format.

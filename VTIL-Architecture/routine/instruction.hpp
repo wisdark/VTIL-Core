@@ -81,7 +81,7 @@ namespace vtil
 		// instruction is valid according to the instruction descriptor.
 		//
 		instruction() {}
-		template<typename... Tx> requires( ( ConvertibleTo<Tx&&, operand> && ... )  )
+		template<typename... Tx> requires( ( Convertible<Tx&&, operand> && ... )  )
 		instruction( const instruction_desc* base, Tx&&... operands ) 
 			: base( base ), operands( { operand( std::forward<Tx>( operands ) )... } ) { is_valid( true ); }
 		instruction( const instruction_desc* base, std::initializer_list<operand> operands ) 
@@ -106,7 +106,16 @@ namespace vtil
 
 		// Returns the access size of the instruction in number of bits.
 		//
-		bitcnt_t access_size() const { return operands.empty() ? 0 : operands[ base->access_size_index ].bit_count(); }
+		bitcnt_t access_size() const 
+		{ 
+			if ( !base->vaccess_size_index )
+				return 0;
+			
+			if ( base->vaccess_size_index < 0 )
+				return math::narrow_cast<bitcnt_t>( operands[ ( -base->vaccess_size_index ) - 1 ].imm().u64 );
+			else
+				return operands[ base->vaccess_size_index - 1 ].bit_count();
+		}
 
 		// Returns the memory location this instruction references.
 		//

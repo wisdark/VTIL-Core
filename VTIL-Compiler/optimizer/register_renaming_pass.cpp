@@ -54,11 +54,12 @@ namespace vtil::optimizer
 			//
 			it.clear_restrictions();
 
-			// Skip if non-position bound.
+			// Skip if position bound.
 			//
 			symbolic::variable dst = { it, it->operands[ 0 ].reg() };
 			symbolic::variable src = { it, it->operands[ 1 ].reg() };
-			if ( !src.at.is_valid() || !dst.at.is_valid() || dst.reg().is_stack_pointer() )
+			if ( !src.at.is_valid() || !dst.at.is_valid() || dst.reg().is_stack_pointer() || 
+				 src.reg().is_volatile() || src.reg() == dst.reg() )
 				continue;
 
 			// If src is used after this point, skip.
@@ -79,7 +80,7 @@ namespace vtil::optimizer
 				// Clear pending if relevant.
 				//
 				if ( lpending.is_valid() )
-					pending.erase( possess_value( lpending ) );
+					pending.erase( std::exchange( lpending, {} ) );
 
 				// If we're at a branch, validate is_used again.
 				//
@@ -178,8 +179,9 @@ namespace vtil::optimizer
 			}
 		}
 
-		// TODO: Compress register space!
+		// Remove nops.
 		//
+		aux::remove_nops( blk );
 		return cnt;
 	}
 };
